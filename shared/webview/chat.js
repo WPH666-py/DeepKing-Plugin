@@ -216,6 +216,8 @@
         persist(state); setRunning(false); hideProgress(); renderAll();
         let note = `✅ 已完成（${k.total_iterations} 步 · ${k.total_tool_calls} 工具）`;
         if (!content.trim()) note += " —— 模型返回为空，可尝试重新发送";
+        const toolsOn = state.settings.tools !== false && state.settings.max !== false;
+        if (toolsOn && !k.total_tool_calls) note += " —— 模型未调用任何工具：若期望读文件/改代码，请改用 deepseek-v4-pro 或 deepseek-chat（flash 可能不支持 Tool Calls）";
         finishStatus(note, false);
         return;
       }
