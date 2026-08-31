@@ -4,7 +4,12 @@
 const fs = require("fs");
 const path = require("path");
 
-const PKG_NAME = "WPH666-py.deepking-plugin-0.1.0";
+/* 与 installer.js 保持一致：从 vscode/package.json 读取 publisher.name-version */
+let PKG_NAME = "WPH666-py.deepking-plugin-0.1.0"; // 兜底值
+try {
+  const extPkg = JSON.parse(fs.readFileSync(path.join(__dirname, "vscode", "package.json"), "utf8"));
+  PKG_NAME = `${extPkg.publisher}.${extPkg.name}-${extPkg.version}`;
+} catch (e) { /* 兜底 */ }
 function ideDirs() {
   const home = process.env.USERPROFILE || process.env.HOME || ".";
   const appData = process.env.APPDATA || path.join(home, "AppData", "Roaming");

@@ -14,7 +14,13 @@
 const fs = require("fs");
 const path = require("path");
 
-const PKG_NAME = "WPH666-py.deepking-plugin-0.1.0"; // 扩展文件夹名（publisher.name-version）
+/* 扩展文件夹名 = publisher.name-version，必须与 vscode/package.json 的 version 一致：
+ * Trae CN 的扫描器在文件夹名与清单版本不符时会静默跳过该扩展（标准 VS Code 才容忍）。 */
+let PKG_NAME = "WPH666-py.deepking-plugin-0.1.0"; // 兜底值
+try {
+  const extPkg = JSON.parse(fs.readFileSync(path.join(__dirname, "vscode", "package.json"), "utf8"));
+  PKG_NAME = `${extPkg.publisher}.${extPkg.name}-${extPkg.version}`;
+} catch (e) { /* vscode/package.json 缺失时使用兜底值 */ }
 
 /* —— 候选扩展目录（按优先级） —— */
 function ideDirs() {
