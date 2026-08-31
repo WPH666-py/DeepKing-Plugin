@@ -126,7 +126,17 @@
     fill("visionKey", state.settings.vision && state.settings.vision.apiKey);
     fill("visionBase", (state.settings.vision && state.settings.vision.baseUrl) || "https://api.openai.com/v1");
     fill("visionModel", (state.settings.vision && state.settings.vision.model) || "gpt-4o-mini");
+    syncVisionVisibility();
     const wl = $("#workdirLabel"); if (wl) wl.textContent = state.settings.workdir || "(工作目录见设置)";
+  }
+  /** 对标 DeepKing：多模态未开启 → 隐藏视觉识别配置（无需填写） */
+  function syncVisionVisibility() {
+    const n = document.getElementById("swMM");
+    const sec = document.getElementById("visionSection");
+    if (!sec) return;
+    const on = n ? n.checked : false;
+    sec.style.display = on ? "" : "none";
+    const hint = $("#ctxHint"); if (hint) hint.textContent = on ? "📎 粘贴图片即多模态提问" : "多模态已关闭（纯文本模式）";
   }
   function saveSettingsFromUI() {
     state.settings.apiKey = val("setKey").trim();
@@ -236,7 +246,14 @@
   }, "mode");
   step(() => {
     updateSettingsUI();
-    for (const id of ["setKey", "setBase", "setModel", "setWorkdir"]) {
+    for (const id of ["setKey", "setBase", "setModel", "setWorkdir", "visionProvider", "visionKey", "visionBase", "visionModel"]) {
+      const n = document.getElementById(id);
+      if (n) n.addEventListener("change", saveSettingsFromUI);
+    }
+    /* 多模态开关联动：关闭 → 隐藏视觉配置（对标 DeepKing） */
+    const swMM = document.getElementById("swMM");
+    if (swMM) swMM.addEventListener("change", () => { saveSettingsFromUI(); syncVisionVisibility(); });
+    for (const id of ["swTools", "swMax"]) {
       const n = document.getElementById(id);
       if (n) n.addEventListener("change", saveSettingsFromUI);
     }
@@ -248,8 +265,10 @@
     if (input) {
       input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
       input.addEventListener("input", () => setRunning(state.running));
-      /* Ctrl+V 粘贴图片 → 多模态 */
+      /* Ctrl+V 粘贴图片 → 多模态（多模态未开启时禁用，对标 DeepKing） */
       input.addEventListener("paste", (e) => {
+        const mm = document.getElementById("swMM");
+        if (mm && !mm.checked) return;
         const items = (e.clipboardData || {}).items; if (!items) return;
         for (const it of items) {
           if (it.kind === "file" && it.type && it.type.startsWith("image/")) {

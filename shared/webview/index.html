@@ -31,14 +31,16 @@
       <label>Base URL<input id="setBase" placeholder="https://api.deepseek.com"></label>
       <label>模型<input id="setModel" placeholder="deepseek-chat"></label>
       <label>工作目录<input id="setWorkdir" placeholder="留空 = 当前工程/当前目录"></label>
-      <div class="dk-vision-head">视觉识别（ModLens / DeepSeek-OCR）</div>
-      <label>引擎<select id="visionProvider">
-        <option value="modlens">ModLens（截图/语义/结构化）</option>
-        <option value="deepseek-ocr">DeepSeek-OCR（文档/公式/表格）</option>
-      </select></label>
-      <label>Vision API Key<input id="visionKey" type="password" placeholder="sk-..." autocomplete="off"></label>
-      <label>Vision Base URL<input id="visionBase" placeholder="https://api.openai.com/v1"></label>
-      <label>Vision Model<input id="visionModel" placeholder="gpt-4o-mini / glm-4v-plus / deepseek-v4-flash-vision-exp"></label>
+      <div id="visionSection">
+        <div class="dk-vision-head">视觉识别（ModLens / DeepSeek-OCR）</div>
+        <label>引擎<select id="visionProvider">
+          <option value="modlens">ModLens（截图/语义/结构化）</option>
+          <option value="deepseek-ocr">DeepSeek-OCR（文档/公式/表格）</option>
+        </select></label>
+        <label>Vision API Key<input id="visionKey" type="password" placeholder="sk-..." autocomplete="off"></label>
+        <label>Vision Base URL<input id="visionBase" placeholder="https://api.openai.com/v1"></label>
+        <label>Vision Model<input id="visionModel" placeholder="gpt-4o-mini / glm-4v-plus / deepseek-v4-flash-vision-exp"></label>
+      </div>
     </details>
 
     <div id="messages" class="dk-messages">
