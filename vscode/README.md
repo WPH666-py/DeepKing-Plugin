@@ -13,8 +13,8 @@
 
 ```bash
 cd vscode
-npm run package        # prepack(复制 shared) + vsce 打包 → ./deepking-plugin-0.1.0.vsix
-code --install-extension ./deepking-plugin-0.1.0.vsix
+npm run package        # prepack(复制 shared) + vsce 打包 → ./deepking-plugin-0.1.3.vsix
+code --install-extension ./deepking-plugin-0.1.3.vsix
 ```
 
 发布到市场（官方 VSCode Marketplace 需 Azure DevOps PAT；或 Open VSX token）：

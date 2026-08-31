@@ -57,7 +57,7 @@ DeepKing-Plugin/
 ```bash
 # 方式 1：直接安装（本地打包）
 cd vscode && npx @vscode/vsce package
-code --install-extension ./deepking-plugin-0.1.0.vsix
+code --install-extension ./deepking-plugin-0.1.3.vsix
 
 # 方式 2：开发调试（F5 自动开 Extension Development Host）
 # 在 vscode/ 内 code . 打开仓库，按 F5
@@ -69,7 +69,7 @@ code --install-extension ./deepking-plugin-0.1.0.vsix
 
 ```bash
 cd jetbrains
-./gradlew buildPlugin   # 产物: build/distributions/deepking-plugin-0.1.0.zip
+./gradlew buildPlugin   # 产物: build/distributions/deepking-plugin-0.1.3.zip
 # IDE → Settings → Plugins → ⚙ → Install Plugin from Disk → 选择 zip，重启
 ```
 
