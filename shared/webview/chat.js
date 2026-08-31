@@ -280,7 +280,7 @@
     setRunning(true); showProgress();
     const payload = pasted
       ? { type: "multimodal", dataUrl: pasted.dataUrl, mime: pasted.mime, prompt: text, mode: ($("#mode") || {}).value || "dsh", settings: state.settings }
-      : { type: "chat", mode: ($("#mode") || {}).value || "dsh", content: text, history: state.messages.filter((m) => m.role !== "system"), settings: state.settings };
+      : { type: "chat", mode: ($("#mode") || {}).value || "dsh", content: text, history: state.messages.filter((m) => m.role !== "system" && m.id !== userMsg.id), settings: state.settings };
     try {
       if (vscode) { vscode.postMessage(payload); return; }
       const resp = await fetch(`http://127.0.0.1:${SERVER_PORT}/rpc`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...payload, config: payload.type === "multimodal" ? payload.settings : payload.settings, vision: payload.settings.vision }) });
@@ -327,7 +327,7 @@
     try { fn(); } catch (e) { showBanner("⚠️ 初始化失败[" + label + "]: " + e.message + "\n" + String((e.stack || "")).slice(0, 300)); }
   }
   step(() => {
-    const vt = document.getElementById("verTag"); if (vt) vt.textContent = "v0.1.6 ✓";
+    const vt = document.getElementById("verTag"); if (vt) vt.textContent = "v0.1.7 ✓";
   }, "ver");
   step(() => {
     const sel = $("#mode"); if (!sel) return;

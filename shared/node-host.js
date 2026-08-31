@@ -354,17 +354,23 @@ function normalizeCall(call) {
   if (typeof args === "string") { try { args = JSON.parse(args); } catch { args = {}; } }
   return { id: call.id, name: call.function.name, arguments: args };
 }
-async function deepseekChat(config, system, messages, tools) {
+async function deepseekChat(config, system, messages, tools, dbg) {
   const body = { model: config.model || "deepseek-chat", messages: [{ role: "system", content: system }, ...messages], stream: false, max_tokens: 16384, temperature: 0.7 };
   if (tools && tools.length) { body.tools = tools; body.tool_choice = "auto"; }
   const url = `${(config.baseUrl || "https://api.deepseek.com").replace(/\/$/, "")}/v1/chat/completions`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 300000);
+  // 调试记录：请求/响应落盘（不含 API Key），出错时给出路径
+  const dbgDir = dbg && dbg.workdir ? path.join(dbg.workdir, ".deepking-debug") : null;
+  const dbgWrite = (name, data) => { if (!dbgDir) return; try { fs.mkdirSync(dbgDir, { recursive: true }); fs.writeFileSync(path.join(dbgDir, name), JSON.stringify(data, null, 2), "utf8"); } catch (_) {} };
   try {
     const resp = await fetch(url, { method: "POST", headers: { "Authorization": `Bearer ${config.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
-    if (!resp.ok) return { ok: false, error: `API error (${resp.status}): ${(await resp.text().catch(() => "")).slice(0, 400)}` };
-    return { ok: true, data: await resp.json() };
-  } catch (e) { return { ok: false, error: `Network error: ${e.message}` }; }
+    if (dbgDir) dbgWrite(`req-${Date.now()}.json`, { url, model: body.model, messages: body.messages, tools: body.tools ? body.tools.length : 0 });
+    const respText = await resp.text().catch(() => "");
+    if (dbgDir) dbgWrite(`resp-${Date.now()}.json`, { status: resp.status, body: respText.slice(0, 200000) });
+    if (!resp.ok) return { ok: false, error: `API error (${resp.status}): ${respText.slice(0, 400)}${dbgDir ? `（详见 ${dbgDir}）` : ""}` };
+    return { ok: true, data: JSON.parse(respText) };
+  } catch (e) { if (dbgDir) dbgWrite(`err-${Date.now()}.json`, { error: String(e && e.message || e) }); return { ok: false, error: `Network error: ${e.message}${dbgDir ? `（详见 ${dbgDir}）` : ""}` }; }
   finally { clearTimeout(timer); }
 }
 
@@ -420,7 +426,7 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
   const schemas = useTools ? TOOL_SCHEMAS : null;
   for (let iter = 0; iter < maxIter; iter++) {
     onEvent({ type: "iteration", current: iter + 1, max: maxIter });
-    const resp = await deepseekChat(config, persona.system, messages, schemas);
+    const resp = await deepseekChat(config, persona.system, messages, schemas, { workdir, runId });
     if (!resp.ok) { onEvent({ type: "error", message: resp.error }); return; }
     const choice = resp.data.choices && resp.data.choices[0];
     if (!choice) { onEvent({ type: "error", message: "无有效响应" }); return; }
