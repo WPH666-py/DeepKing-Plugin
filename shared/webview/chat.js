@@ -48,6 +48,8 @@
   if (!Array.isArray(state.messages)) state.messages = [];
   if (!Array.isArray(state.toolCalls)) state.toolCalls = [];
   if (typeof state.running !== "boolean") state.running = false;
+  if (typeof state.runIds !== "object" || !state.runIds) state.runIds = {};
+  state.pendingRunUser = null; state.currentRunId = null;
 
   /* ── 渲染 ── */
   const msgs = $("#messages") || document.body;
@@ -74,11 +76,12 @@
     return out.join("");
   }
   const roleLabel = { user: "你", assistant: "AI", system: "系统" };
-  function addMsg(role, content) {
+  function addMsg(role, content, extra) {
     const tip = $("#emptyTip"); if (tip) tip.style.display = "none";
     const wrap = document.createElement("div");
     wrap.className = "dk-msg " + role;
-    wrap.innerHTML = `<div class="dk-role">${roleLabel[role] || role}</div><div class="dk-content">${renderMarkdown(content)}</div>`;
+    const btn = (role === "user") ? `<button class="dk-withdraw" data-id="${esc(extra && extra.id ? extra.id : "")}" title="撤回该对话：内容回到输入框，并回滚本次文件修改">↩ 撤回</button>` : "";
+    wrap.innerHTML = `<div class="dk-role">${roleLabel[role] || role}</div><div class="dk-content">${renderMarkdown(content)}</div>${btn}`;
     msgs.appendChild(wrap);
     msgs.scrollTop = msgs.scrollHeight;
     return wrap;
@@ -101,17 +104,37 @@
   function renderAll() {
     msgs.innerHTML = "";
     if (!state.messages.length) { const tip = $("#emptyTip"); if (tip) tip.style.display = ""; return; }
-    state.messages.forEach((m) => addMsg(m.role, m.content));
+    state.messages.forEach((m) => addMsg(m.role, m.content, m));
     if (state.toolCalls.length) renderToolCalls();
     msgs.scrollTop = msgs.scrollHeight;
   }
-  function setRunning(r) { state.running = r; const b = $("#btnSend"); if (b) { const i = $("#input"); b.disabled = r || !i.value.trim(); } }
+  function setRunning(r) {
+    state.running = r;
+    const b = $("#btnSend"); if (b) { const i = $("#input"); b.disabled = r || !i.value.trim(); }
+    const i = $("#input"); if (i) i.disabled = r;
+    const m = $("#mode"); if (m) m.disabled = r;
+  }
   function showProgress() {
-    const p = $("#progress"); if (p) { p.style.display = ""; p.textContent = "AI 思考中… " + (state.progress || ""); }
+    const p = $("#progress"); if (p) { p.style.display = ""; p.classList.remove("dk-done", "dk-error"); p.textContent = "🔄 AI 思考中… " + (state.progress || ""); }
     const tips = msgs.querySelectorAll(".dk-msg.assistant"); const tip = tips[tips.length - 1];
     if (tip && state.assistant) tip.querySelector(".dk-content").innerHTML = renderMarkdown(state.assistant);
   }
-  function hideProgress() { const p = $("#progress"); if (p) p.style.display = "none"; }
+  function hideProgress() { const p = $("#progress"); if (p) { p.style.display = "none"; p.classList.remove("dk-done", "dk-error"); } }
+  /** 完成/失败状态提示（绿/红，5 秒后自动消失） */
+  function finishStatus(text, isError) {
+    const p = $("#progress");
+    if (p) {
+      p.style.display = "";
+      p.classList.toggle("dk-done", !isError);
+      p.classList.toggle("dk-error", !!isError);
+      p.textContent = text;
+      setTimeout(() => { if (p.textContent === text) hideProgress(); }, 5000);
+    }
+  }
+  /* 看门狗：运行中超 60s 无事件 → 提示可能卡住（非阻塞，完成自动停） */
+  let watchdogTimer = null, lastEventAt = 0;
+  function armWatchdog() { lastEventAt = Date.now(); clearInterval(watchdogTimer); watchdogTimer = setInterval(() => { if (state.running && Date.now() - lastEventAt > 60000) showBanner("⏳ 已 60 秒无响应，可能卡住（API/网络）。仍在处理中，完成或超时（5 分钟）后自动结束。"); }, 5000); }
+  function disarmWatchdog() { clearInterval(watchdogTimer); watchdogTimer = null; }
   function updateSettingsUI() {
     const fill = (id, v) => { const n = document.getElementById(id); if (n) n.value = v == null ? "" : v; };
     const chk = (id, v) => { const n = document.getElementById(id); if (n) n.checked = v !== false; };
@@ -163,22 +186,38 @@
   function onAgentEvent(k) {
     try {
       if (!k || !k.type || !AGENT_EVENT_TYPES.includes(k.type)) return;
-      if (k.type === "started") { state.progress = `0/${k.max_iterations} 步`; }
+      lastEventAt = Date.now();
+      if (k.type === "started") {
+        state.progress = `0/${k.max_iterations} 步`;
+        state.currentRunId = k.run_id || null;
+        armWatchdog();
+      }
       else if (k.type === "iteration") { state.progress = `${k.current}/${k.max} 步`; }
       else if (k.type === "tool_call_requested") { state.toolCalls.push({ id: k.id, name: k.name, arguments: k.arguments, status: "running", output: "" }); }
       else if (k.type === "tool_call_executed") { const tc = state.toolCalls.find((t) => t.id === k.id); if (tc) { tc.success = k.success; tc.output = k.output; tc.status = k.success ? "done" : "error"; } }
       else if (k.type === "assistant_text") { state.assistant = (state.assistant || "") + k.content; }
       else if (k.type === "done") {
-        state.messages.push({ role: "assistant", content: state.assistant || k.content || "" });
+        disarmWatchdog();
+        const content = state.assistant || k.content || "";
+        state.messages.push({ role: "assistant", content });
         state.assistant = ""; state.toolCalls = []; state.progress = "";
+        // 记录本次运行（撤回用）：绑定到当前用户消息
+        if (state.currentRunId && state.pendingRunUser) state.runIds[state.pendingRunUser] = state.currentRunId;
+        state.currentRunId = null; state.pendingRunUser = null;
         persist(state); setRunning(false); hideProgress(); renderAll();
-        return; // 结束：不再走底部 showProgress，防止"思考中"复现
+        let note = `✅ 已完成（${k.total_iterations} 步 · ${k.total_tool_calls} 工具）`;
+        if (!content.trim()) note += " —— 模型返回为空，可尝试重新发送";
+        finishStatus(note, false);
+        return;
       }
       else if (k.type === "error") {
+        disarmWatchdog();
         const text = "⚠️ 错误：" + k.message;
         state.messages.push({ role: "system", content: text });
+        state.currentRunId = null; state.pendingRunUser = null;
         persist(state); setRunning(false); hideProgress(); renderAll();
-        return; // 结束
+        finishStatus("❌ 执行出错：" + (k.message || "").slice(0, 80), true);
+        return;
       }
       showProgress(); if (state.toolCalls.length) renderToolCalls();
     } catch (e) {
@@ -191,8 +230,13 @@
       if (m && m.type === "ev") onAgentEvent(m.ev);
       else if (m && m.type === "config") { updateSettingsUI(); }
       else if (m && m.type === "reset") { state.messages = []; persist(state); renderAll(); }
+      else if (m && m.type === "undo_result") {
+        finishStatus(`↩ 撤回完成，已回滚 ${m.restored} 处文件变更`, false);
+        disarmedWarn();
+      }
     });
   }
+  function disarmedWarn() { /* 占位：保持语义清晰 */ }
 
   /* ── 粘贴图片（多模态）── */
   function setPastedImage(dataUrl, mime, name) {
@@ -212,10 +256,12 @@
     if (!text && !state.pasted) return;
     saveSettingsFromUI();
     const pasted = (state.settings.multimodal !== false && state.pasted) ? state.pasted : null;
-    state.messages.push({ role: "user", content: (pasted ? "📷[图片] " : "") + (text || "请描述这张图片。") });
+    const userMsg = { id: `u${Date.now()}_${Math.floor(Math.random() * 1e6)}`, role: "user", content: (pasted ? "📷[图片] " : "") + (text || "请描述这张图片。") };
+    state.messages.push(userMsg);
     state.toolCalls = []; state.assistant = ""; state.progress = "";
+    state.pendingRunUser = userMsg.id; state.currentRunId = null;
     persist(state);
-    addMsg("user", (pasted ? "📷[图片] " : "") + (text || "请描述这张图片。"));
+    addMsg("user", userMsg.content, userMsg);
     if (input) input.value = "";
     clearPastedImage();
     setRunning(true); showProgress();
@@ -233,12 +279,42 @@
     }
   }
 
+  /* ── 撤回对话（对标 DeepKing：消息回输入框 + 文件变更整体回退）── */
+  async function withdrawMessage(msgId) {
+    if (!msgId || state.running) return;
+    const idx = state.messages.findIndex((m) => m.id === msgId);
+    if (idx < 0) return;
+    const target = state.messages[idx];
+    const runIds = [];
+    for (let i = idx; i < state.messages.length; i++) {
+      const rid = state.runIds[state.messages[i].id || ""];
+      if (rid) runIds.push(rid);
+    }
+    if (runIds.length) {
+      if (vscode) { vscode.postMessage({ type: "undo", runIds }); }
+      else {
+        try {
+          const r = await fetch(`http://127.0.0.1:${SERVER_PORT}/rpc`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: "undo", runIds }) });
+          const d = await r.json();
+          const ev = (d.events || []).find((x) => x.type === "undo_result");
+          if (ev) finishStatus(`↩ 撤回完成，已回滚 ${ev.restored} 处文件变更`, false);
+        } catch (_) {}
+      }
+    }
+    // 移除本消息及之后所有消息（内容回填输入框）
+    for (let i = idx; i < state.messages.length; i++) delete state.runIds[state.messages[i].id || ""];
+    state.messages.splice(idx);
+    persist(state); renderAll();
+    const input = $("#input"); if (input) { input.value = target.content; setRunning(false); input.focus(); }
+    addMsg("system", "↩ 已撤回该对话（内容已回到输入框，本次文件修改已回滚）");
+  }
+
   /* ── 初始化（全防御式，分步骤捕获）── */
   function step(fn, label) {
     try { fn(); } catch (e) { showBanner("⚠️ 初始化失败[" + label + "]: " + e.message + "\n" + String((e.stack || "")).slice(0, 300)); }
   }
   step(() => {
-    const vt = document.getElementById("verTag"); if (vt) vt.textContent = "v0.1.4 ✓";
+    const vt = document.getElementById("verTag"); if (vt) vt.textContent = "v0.1.5 ✓";
   }, "ver");
   step(() => {
     const sel = $("#mode"); if (!sel) return;
@@ -288,6 +364,13 @@
   step(() => {
     const btn = $("#pasteRemove"); if (btn) btn.addEventListener("click", clearPastedImage);
   }, "paste");
+  step(() => {
+    /* 撤回按钮：事件委托（渲染后依然生效） */
+    msgs.addEventListener("click", (e) => {
+      const btn = e.target && e.target.closest ? e.target.closest(".dk-withdraw") : null;
+      if (btn) withdrawMessage(btn.getAttribute("data-id"));
+    });
+  }, "withdraw");
   step(() => {
     const btn = $("#btnClear");
     if (btn) btn.addEventListener("click", () => {

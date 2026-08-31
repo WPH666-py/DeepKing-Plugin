@@ -383,8 +383,31 @@ function compressHistory(history) {
   return { history: [summaryMsg, ...keep], compressed: true, before: total, after };
 }
 
-/* ───────── Agent Loop（agent_loop.rs；max/工具开关 + 压缩） ───────── */
-async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent, vision) {
+/* ───────── 撤销/回滚（对标 DeepKing 撤回对话） ───────── */
+function recordUndo(workdir, name, args, onUndo) {
+  if (!onUndo) return;
+  try {
+    const full = resolvePath(workdir, args.file_path || "");
+    if (!full) return;
+    const existed = fs.existsSync(full);
+    let original = null;
+    if (existed) { try { original = fs.readFileSync(full, "utf8"); } catch (_) { original = null; } }
+    onUndo({ path: full, existed, original, tool: name });
+  } catch (_) {}
+}
+function applyUndo(entries) {
+  let count = 0;
+  for (const e of (entries || []).slice().reverse()) {
+    try {
+      if (e.existed && e.original != null) { fs.mkdirSync(path.dirname(e.path), { recursive: true }); fs.writeFileSync(e.path, e.original, "utf8"); count++; }
+      else if (!e.existed) { fs.rmSync(e.path, { recursive: true, force: true }); count++; }
+    } catch (_) {}
+  }
+  return count;
+}
+
+/* ───────── Agent Loop（agent_loop.rs；max/工具开关 + 压缩 + 撤销日志） ───────── */
+async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent, vision, onUndo, runId) {
   const persona = MODES[mode] || MODES.dsh;
   const useTools = config.tools !== false && config.max !== false;
   const maxIter = 25;
@@ -392,7 +415,7 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
   let messages = com.history.map((m) => ({ role: m.role, content: m.content, tool_calls: m.tool_calls, tool_call_id: m.tool_call_id, name: m.name })).filter((m) => m.role !== "system");
   messages.push({ role: "user", content: userMessage });
   let finalContent = "", toolCount = 0;
-  onEvent({ type: "started", max_iterations: maxIter, use_tools: useTools });
+  onEvent({ type: "started", max_iterations: maxIter, use_tools: useTools, run_id: runId });
   if (com.compressed) onEvent({ type: "context_compressed", before_tokens: com.before, after_tokens: com.after });
   const schemas = useTools ? TOOL_SCHEMAS : null;
   for (let iter = 0; iter < maxIter; iter++) {
@@ -413,7 +436,11 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
       onEvent({ type: "tool_call_requested", id: call.id, name: call.name, arguments: call.arguments });
       let result;
       if (call.name === "bash") result = await runBash(workdir, call.arguments.command || "", call.arguments.timeout_ms);
-      else { result = execTool(workdir, call.name, call.arguments, { vision }); if (result instanceof Promise) result = await result; }
+      else {
+        // 写入类工具执行前记录撤销日志（撤回对话时整体回退）
+        if (["write", "edit", "delete"].includes(call.name)) recordUndo(workdir, call.name, call.arguments, onUndo);
+        result = execTool(workdir, call.name, call.arguments, { vision }); if (result instanceof Promise) result = await result;
+      }
       const output = truncate(result.output || "", 3200);
       onEvent({ type: "tool_call_executed", id: call.id, name: call.name, success: result.success, output });
       messages.push({ role: "tool", tool_call_id: call.id, name: call.name, content: (result.success ? "" : "[ERROR] ") + output });
@@ -424,16 +451,16 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
 }
 
 /* ───────── 多模态流程：识图 → 结合问题发送 ───────── */
-async function handleMultimodal(config, vision, dataUrl, mime, prompt, workdir, onEvent) {
+async function handleMultimodal(config, vision, dataUrl, mime, prompt, workdir, onEvent, onUndo, runId) {
   if (!vision || !vision.apiKey) { onEvent({ type: "error", message: "未配置视觉引擎（设置 → 视觉识别：API Key/Base URL/模型）" }); return; }
   try {
     const imgPath = saveTempImage(dataUrl, mime, workdir);
-    onEvent({ type: "started", max_iterations: 25, use_tools: config.tools !== false });
+    onEvent({ type: "started", max_iterations: 25, use_tools: config.tools !== false, run_id: runId });
     onEvent({ type: "assistant_text", content: "📷 正在识别图片…(ModLens/DeepSeek-OCR)\n" });
     const text = await analyzeImage(vision, imgPath, null);
     onEvent({ type: "assistant_text", content: `\n✅ 图片识别结果（${vision.provider || "modlens"}）：\n${text}\n\n` });
     const finalPrompt = (prompt && prompt.trim()) ? `${prompt.trim()}\n\n[用户粘贴了一张图片，以下是视觉识别结果，请结合回答]：\n${text}` : `用户粘贴了一张图片，以下是视觉识别结果，请描述并分析：\n${text}`;
-    await runAgentLoop(config, config.mode || "dsh", finalPrompt, [], workdir, onEvent, vision);
+    await runAgentLoop(config, config.mode || "dsh", finalPrompt, [], workdir, onEvent, vision, onUndo, runId);
   } catch (e) {
     onEvent({ type: "error", message: "识图失败: " + e.message });
   }
@@ -469,14 +496,25 @@ function handleRpc(req, res, cors) {
     const events = [];
     const emit = (ev) => events.push(ev);
     const workdir = msg.workdir || process.cwd();
+    // 撤销（撤回对话）：按 run 顺序回滚文件变更
+    if (msg.type === "undo") {
+      let restored = 0;
+      const logs = handleRpc.undoStore || (handleRpc.undoStore = {});
+      for (const rid of msg.runIds || []) { restored += applyUndo(logs[rid] || []); delete logs[rid]; }
+      res.writeHead(200, { ...cors, "Content-Type": "application/json" });
+      return res.end(JSON.stringify({ events: [{ type: "undo_result", restored }] }));
+    }
+    const runId = `r${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const logs = handleRpc.undoStore || (handleRpc.undoStore = {});
+    logs[runId] = [];
     const p = msg.type === "multimodal"
-      ? handleMultimodal(cfg, vision, msg.dataUrl, msg.mime, msg.prompt, workdir, emit)
-      : runAgentLoop(cfg, msg.mode || "dsh", msg.content || "", msg.history || [], workdir, emit, vision);
+      ? handleMultimodal(cfg, vision, msg.dataUrl, msg.mime, msg.prompt, workdir, emit, (e) => logs[runId].push(e), runId)
+      : runAgentLoop(cfg, msg.mode || "dsh", msg.content || "", msg.history || [], workdir, emit, vision, (e) => logs[runId].push(e), runId);
     p.then(() => { res.writeHead(200, { ...cors, "Content-Type": "application/json" }); res.end(JSON.stringify({ events })); });
   });
 }
 
-module.exports = { runAgentLoop, handleMultimodal, analyzeImage, saveTempImage, MODES, TOOL_SCHEMAS, startServer, runBash, execTool, compressHistory };
+module.exports = { runAgentLoop, handleMultimodal, analyzeImage, saveTempImage, MODES, TOOL_SCHEMAS, startServer, runBash, execTool, compressHistory, applyUndo };
 
 if (require.main === module) {
   const portArg = process.argv.indexOf("--port");

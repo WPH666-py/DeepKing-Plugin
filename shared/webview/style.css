@@ -50,6 +50,15 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--tx); f
 .dk-tool-pre { background: var(--code); border-radius: 4px; padding: 6px; margin: 0; overflow: auto; font-size: 11px; font-family: Consolas, monospace; max-height: 180px; }
 .dk-input-area { border-top: 1px solid var(--bd); background: var(--bg2); padding: 8px 10px; }
 .dk-progress { font-size: 11.5px; color: var(--ac); padding: 0 2px 6px; }
+.dk-progress.dk-done { color: #2e8b57; font-weight: 700; }
+.dk-progress.dk-error { color: var(--err); font-weight: 700; }
+.dk-withdraw {
+  display: inline-block; margin: 4px 0 0 2px; font-size: 10.5px; color: var(--tx2);
+  background: transparent; border: 1px solid var(--bd); border-radius: 5px;
+  padding: 2px 8px; cursor: pointer; opacity: 0; transition: opacity .15s;
+}
+.dk-msg.user:hover .dk-withdraw { opacity: 1; }
+.dk-withdraw:hover { color: var(--err); border-color: var(--err); }
 .dk-input-area textarea {
   width: 100%; resize: vertical; min-height: 56px; max-height: 220px; background: var(--bg); color: var(--tx);
   border: 1px solid var(--bd); border-radius: 8px; padding: 8px; font: inherit; outline: none;
