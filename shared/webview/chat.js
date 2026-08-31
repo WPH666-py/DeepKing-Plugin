@@ -329,7 +329,7 @@
     try { fn(); } catch (e) { showBanner("⚠️ 初始化失败[" + label + "]: " + e.message + "\n" + String((e.stack || "")).slice(0, 300)); }
   }
   step(() => {
-    const vt = document.getElementById("verTag"); if (vt) vt.textContent = "v0.1.7 ✓";
+    const vt = document.getElementById("verTag"); if (vt) vt.textContent = "v0.1.10 ✓";
   }, "ver");
   step(() => {
     const sel = $("#mode"); if (!sel) return;
