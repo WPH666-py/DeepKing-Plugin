@@ -128,7 +128,7 @@
       p.classList.toggle("dk-done", !isError);
       p.classList.toggle("dk-error", !!isError);
       p.textContent = text;
-      setTimeout(() => { if (p.textContent === text) hideProgress(); }, 5000);
+      setTimeout(() => { if (p.textContent === text) hideProgress(); }, 8000);
     }
   }
   /* 看门狗：运行中超 60s 无事件 → 提示可能卡住（非阻塞，完成自动停） */
@@ -152,6 +152,13 @@
     syncVisionVisibility();
     const wl = $("#workdirLabel"); if (wl) wl.textContent = state.settings.workdir || "(工作目录见设置)";
   }
+  /** 模式指示（一眼看出是纯文字还是 Agent） */
+  function updateModeHint() {
+    const hint = $("#ctxHint"); if (!hint) return;
+    const toolsOn = state.settings.tools !== false && state.settings.max !== false;
+    const mmOn = state.settings.multimodal !== false;
+    hint.textContent = `模式：${toolsOn ? "Agent（16 工具）" : "纯文字（工具关）"} · ${mmOn ? "多模态开" : "多模态关"}`;
+  }
   /** 对标 DeepKing：多模态未开启 → 隐藏视觉识别配置（无需填写） */
   function syncVisionVisibility() {
     const n = document.getElementById("swMM");
@@ -159,7 +166,7 @@
     if (!sec) return;
     const on = n ? n.checked : false;
     sec.style.display = on ? "" : "none";
-    const hint = $("#ctxHint"); if (hint) hint.textContent = on ? "📎 粘贴图片即多模态提问" : "多模态已关闭（纯文本模式）";
+    updateModeHint();
   }
   function saveSettingsFromUI() {
     state.settings.apiKey = val("setKey").trim();
@@ -178,6 +185,8 @@
     };
     persist(state);
     if (vscode) { try { vscode.postMessage({ type: "saveConfig", config: state.settings }); } catch (_) {} }
+    updateModeHint();
+    if (!state.running) finishStatus("✅ 配置已保存", false);
     const wl = $("#workdirLabel"); if (wl) wl.textContent = state.settings.workdir || "(工作目录见设置)";
   }
 
@@ -228,15 +237,19 @@
     window.addEventListener("message", (e) => {
       const m = e.data;
       if (m && m.type === "ev") onAgentEvent(m.ev);
-      else if (m && m.type === "config") { updateSettingsUI(); }
+      else if (m && m.type === "config") {
+        // 宿主配置（globalState 的真正来源）合并进本地状态并刷新 UI
+        if (m.config) { state.settings = { ...state.settings, ...(m.config || {}) }; persist(state); }
+        updateSettingsUI(); updateModeHint();
+        const p = $("#progress");
+        if (p && !state.running) { finishStatus("✅ 配置已加载", false); }
+      }
       else if (m && m.type === "reset") { state.messages = []; persist(state); renderAll(); }
       else if (m && m.type === "undo_result") {
         finishStatus(`↩ 撤回完成，已回滚 ${m.restored} 处文件变更`, false);
-        disarmedWarn();
       }
     });
   }
-  function disarmedWarn() { /* 占位：保持语义清晰 */ }
 
   /* ── 粘贴图片（多模态）── */
   function setPastedImage(dataUrl, mime, name) {
@@ -314,7 +327,7 @@
     try { fn(); } catch (e) { showBanner("⚠️ 初始化失败[" + label + "]: " + e.message + "\n" + String((e.stack || "")).slice(0, 300)); }
   }
   step(() => {
-    const vt = document.getElementById("verTag"); if (vt) vt.textContent = "v0.1.5 ✓";
+    const vt = document.getElementById("verTag"); if (vt) vt.textContent = "v0.1.6 ✓";
   }, "ver");
   step(() => {
     const sel = $("#mode"); if (!sel) return;
@@ -324,6 +337,7 @@
   }, "mode");
   step(() => {
     updateSettingsUI();
+    updateModeHint();
     for (const id of ["setKey", "setBase", "setModel", "setWorkdir", "visionProvider", "visionKey", "visionBase", "visionModel"]) {
       const n = document.getElementById(id);
       if (n) n.addEventListener("change", saveSettingsFromUI);
