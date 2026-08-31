@@ -1,6 +1,14 @@
 /* DeepKing · 共享 Webview（VSCode 模式 / 本地服务模式 自适应） */
 (() => {
   "use strict";
+  /* —— 自诊断：任何脚本错误直接在页面顶部显示（Trae 控制台不可见时也能定位） —— */
+  window.addEventListener("error", (e) => showBanner("⚠️ 脚本错误: " + (e.message || e.error)));
+  window.addEventListener("unhandledrejection", (e) => showBanner("⚠️ Promise 错误: " + (e.reason && e.reason.message || e.reason)));
+  function showBanner(text) {
+    const b = document.querySelector("#errBanner");
+    if (b) { b.textContent = text; b.style.display = "block"; }
+    else console.error(text);
+  }
   const $ = (s) => document.querySelector(s);
   const MODES = [
     { id: "dsh", label: "DSH (Harness)" }, { id: "dsk", label: "DSK (K3)" },
@@ -21,6 +29,8 @@
   };
 
   const state = store.state || { settings: {}, messages: [], toolCalls: [], running: false };
+  if (!state.settings) state.settings = {};
+  if (!Array.isArray(state.messages)) state.messages = [];
   const me = {
     post(msg) {
       if (vscode) vscode.postMessage(msg);
@@ -177,6 +187,19 @@
 
   /* ── 初始化 ── */
   function init() {
+    /* 标记：chat.js 已执行（排障时看标题是否出现 ✓） */
+    const vt = document.getElementById("verTag");
+    if (vt) vt.textContent = "v0.1.1 ✓";
+
+    /* 先绑定设置按钮（最简、最优先，避免被后续错误连累） */
+    const btnSettings = document.getElementById("btnSettings");
+    const overlay = document.getElementById("settingsOverlay");
+    const openSettings = () => { if (overlay) { overlay.style.display = "flex"; } else showBanner("⚠️ 未找到设置面板 DOM"); };
+    if (btnSettings) {
+      btnSettings.addEventListener("click", openSettings);
+      btnSettings.onclick = openSettings; // 双保险
+    }
+
     const sel = $("#mode");
     MODES.forEach((m) => { const o = document.createElement("option"); o.value = m.id; o.textContent = m.label; sel.appendChild(o); });
     sel.value = state.settings.mode || "dsh";
@@ -195,8 +218,7 @@
       state.messages = []; state.toolCalls = []; state.assistant = ""; persist(state); renderAll();
       if (vscode) vscode.postMessage({ type: "cleared" });
     });
-    $("#btnSettings").addEventListener("click", () => { $("#settingsOverlay").style.display = "flex"; });
-    $("#btnCancel").addEventListener("click", () => { $("#settingsOverlay").style.display = "none"; });
+    $("#btnCancel").addEventListener("click", () => { overlay.style.display = "none"; });
     $("#btnSave").addEventListener("click", () => {
       state.settings.apiKey = $("#setKey").value.trim();
       state.settings.baseUrl = $("#setBase").value.trim() || "https://api.deepseek.com";
@@ -204,8 +226,8 @@
       state.settings.workdir = $("#setWorkdir").value.trim();
       persist(state); renderWorkdirLabel();
       if (vscode) vscode.postMessage({ type: "saveConfig", config: state.settings });
-      $("#settingsOverlay").style.display = "none";
+      overlay.style.display = "none";
     });
   }
-  init();
+  try { init(); } catch (e) { showBanner("⚠️ 初始化失败: " + e.message); }
 })();

@@ -7,11 +7,12 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <div id="errBanner" class="dk-banner" style="display:none"></div>
   <div id="app">
     <header class="dk-header">
       <div class="dk-title">
-        <img src="deepking.png" class="dk-logo" alt="DK" onerror="this.style.display='none'">
-        <span>DeepKing · AI 助手</span>
+        <img src="deepking.png" class="dk-logo" alt="DK">
+        <span>DeepKing · AI 助手 <small id="verTag" style="opacity:.5">v0.1.1</small></span>
       </div>
       <div class="dk-header-actions">
         <select id="mode" title="模式"></select>

@@ -60,6 +60,11 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--tx); f
 .dk-send { background: var(--ac); color: var(--acT); border: none; border-radius: 7px; padding: 6px 18px; font-size: 12.5px; cursor: pointer; }
 .dk-send:disabled { opacity: .45; cursor: default; }
 .dk-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.dk-banner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 99; padding: 6px 10px;
+  background: #7a1d12; color: #ffd9d0; font-size: 12px; line-height: 1.5;
+  white-space: pre-wrap;
+}
 .dk-settings { background: var(--bg); border: 1px solid var(--bd); border-radius: 10px; padding: 16px; width: min(320px, 90%); }
 .dk-settings h3 { margin: 0 0 10px; font-size: 14px; }
 .dk-settings label { display: block; font-size: 11.5px; color: var(--tx2); margin: 8px 0 2px; }
