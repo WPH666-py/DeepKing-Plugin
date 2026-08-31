@@ -12,14 +12,22 @@
     <header class="dk-header">
       <div class="dk-title">
         <img src="deepking.png" class="dk-logo" alt="DK">
-        <span>DeepKing · AI 助手 <small id="verTag" style="opacity:.5">v0.1.1</small></span>
+        <span>DeepKing · AI 助手 <small id="verTag" style="opacity:.5">v0.1.2</small></span>
       </div>
       <div class="dk-header-actions">
         <select id="mode" title="模式"></select>
-        <button id="btnSettings" title="设置 (API Key / Base URL / 模型)">⚙</button>
         <button id="btnClear" title="清空对话">🗑</button>
       </div>
     </header>
+
+    <!-- 常驻内联设置（原生 details，零 JS 依赖，默认展开可见） -->
+    <details id="settingsBar" class="dk-settings-bar" open>
+      <summary>DeepSeek 配置</summary>
+      <label>API Key<input id="setKey" type="password" placeholder="sk-..." autocomplete="off"></label>
+      <label>Base URL<input id="setBase" placeholder="https://api.deepseek.com"></label>
+      <label>模型<input id="setModel" placeholder="deepseek-chat"></label>
+      <label>工作目录<input id="setWorkdir" placeholder="留空 = 当前工程/当前目录"></label>
+    </details>
 
     <div id="messages" class="dk-messages">
       <div class="dk-empty" id="emptyTip">
@@ -36,20 +44,6 @@
         <button id="btnSend" class="dk-send" disabled>发送</button>
       </div>
     </footer>
-  </div>
-
-  <div id="settingsOverlay" class="dk-overlay" style="display:none">
-    <div class="dk-settings">
-      <h3>DeepSeek 配置</h3>
-      <label>API Key<input id="setKey" type="password" placeholder="sk-..."></label>
-      <label>Base URL<input id="setBase" placeholder="https://api.deepseek.com"></label>
-      <label>模型<input id="setModel" placeholder="deepseek-chat"></label>
-      <label>工作目录<input id="setWorkdir" placeholder="留空 = 当前工程/当前目录"></label>
-      <div class="dk-settings-actions">
-        <button id="btnSave">保存</button>
-        <button id="btnCancel" class="secondary">取消</button>
-      </div>
-    </div>
   </div>
 
   <script src="chat.js"></script>
