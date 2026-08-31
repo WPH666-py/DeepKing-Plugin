@@ -356,7 +356,8 @@ function normalizeCall(call) {
 }
 async function deepseekChat(config, system, messages, tools, dbg) {
   const body = { model: config.model || "deepseek-chat", messages: [{ role: "system", content: system }, ...messages], stream: false, max_tokens: 16384, temperature: 0.7 };
-  if (tools && tools.length) { body.tools = tools; body.tool_choice = "auto"; }
+  // 对齐官方 Tool Calls 指南：不传 tool_choice（默认即 auto），tools 仅在有工具时携带
+  if (tools && tools.length) body.tools = tools;
   const url = `${(config.baseUrl || "https://api.deepseek.com").replace(/\/$/, "")}/v1/chat/completions`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 300000);
