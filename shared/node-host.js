@@ -454,6 +454,20 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
       if (/^(write|edit|delete|bash)$/.test(call.name) && result.success) onEvent({ type: "file_changed", reason: call.name });
     }
   }
+  /* 步数用尽：若模型全程在调用工具、始终没给出结论文字，追加一次"强制总结轮"
+   *（不带工具，仅文字输出），避免出现"跑了 25 步却返回空内容"的假死现象 */
+  if (!(finalContent && String(finalContent).trim())) {
+    onEvent({ type: "iteration", current: maxIter + 1, max: maxIter + 1 });
+    messages.push({
+      role: "system",
+      content: `工具调用轮次已达上限（${maxIter} 步），无法再调用工具。请基于对话中已经读取到的文件信息直接给出完整结论；若信息不足，请明确说明缺少什么，并给出获取这些信息的具体建议。不要调用任何工具，不要输出空内容。`,
+    });
+    const sum = await deepseekChat(config, persona.system, messages, null, { workdir, runId });
+    if (!sum.ok) { onEvent({ type: "error", message: sum.error }); return; }
+    const sm = sum.data.choices && sum.data.choices[0] ? (sum.data.choices[0].message || {}) : {};
+    finalContent = sm.content || "";
+    if (finalContent) onEvent({ type: "assistant_text", content: finalContent });
+  }
   onEvent({ type: "done", content: finalContent, total_iterations: maxIter, total_tool_calls: toolCount });
 }
 
