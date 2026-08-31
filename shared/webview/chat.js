@@ -2,14 +2,16 @@
 (() => {
   "use strict";
   /* —— 自诊断：任何脚本错误直接在页面顶部显示（Trae 控制台不可见时也能定位） —— */
-  window.addEventListener("error", (e) => showBanner("⚠️ 脚本错误: " + (e.message || e.error)));
-  window.addEventListener("unhandledrejection", (e) => showBanner("⚠️ Promise 错误: " + (e.reason && e.reason.message || e.reason)));
+  window.addEventListener("error", (e) => showBanner("⚠️ 脚本错误: " + (e.message || e.error) + "\n" + ((e.error && e.error.stack) ? String(e.error.stack).slice(0, 800) : "")));
+  window.addEventListener("unhandledrejection", (e) => showBanner("⚠️ Promise 错误: " + ((e.reason && (e.reason.stack || e.reason.message)) || e.reason)));
   function showBanner(text) {
     const b = document.querySelector("#errBanner");
     if (b) { b.textContent = text; b.style.display = "block"; }
     else console.error(text);
   }
   const $ = (s) => document.querySelector(s);
+  /** 安全取元素；避免 null 直接炸 */
+  const el = (s) => { const n = document.querySelector(s); return n || null; };
   const MODES = [
     { id: "dsh", label: "DSH (Harness)" }, { id: "dsk", label: "DSK (K3)" },
     { id: "dsq", label: "DSQ (Qwen3.8)" }, { id: "dsg", label: "DSG (GLM5.3)" },
@@ -113,8 +115,9 @@
   function hideProgress() { $("#progress").style.display = "none"; }
 
   /* ── 事件处理（宿主推送） ── */
+  const AGENT_EVENT_TYPES = ["started", "iteration", "tool_call_requested", "tool_call_executed", "assistant_text", "done", "error", "file_changed", "context_compressed"];
   function onAgentEvent(ev) {
-    if (!ev || !ev.type) return;
+    if (!ev || !ev.type || !AGENT_EVENT_TYPES.includes(ev.type)) return;
     const k = ev;
     if (k.type === "started") { state.progress = `0/${k.max_iterations} 步`; }
     else if (k.type === "iteration") { state.progress = `${k.current}/${k.max} 步`; }
