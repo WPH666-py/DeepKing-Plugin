@@ -390,6 +390,34 @@ function compressHistory(history) {
   return { history: [summaryMsg, ...keep], compressed: true, before: total, after };
 }
 
+/* ───────── 循环内增量压缩（防止 messages 无限膨胀顶爆上下文窗口） ───────── */
+const LOOP_TOKEN_CAP = 36000;   // 循环内估算超过该值触发压缩
+const LOOP_KEEP_BUDGET = 22000; // 压缩后保留最近约多少 tokens（含最近工具结果）
+function compactInLoop(messages, keepBudget) {
+  const total = messages.reduce((s, m) => s + estimateTokens(String(m.content || "")), 0);
+  if (total <= LOOP_TOKEN_CAP) return null;
+  // 从后往前找最靠前的 user/assistant 边界，使"保留后缀"不超过预算；
+  // 只能切在 user/assistant 前，保证被保留侧的 tool 结果（role=tool）链完整。
+  let tail = 0, cut = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    tail += estimateTokens(String(messages[i].content || ""));
+    if (tail > keepBudget) break;
+    if (messages[i].role === "user" || messages[i].role === "assistant") cut = i;
+  }
+  if (cut <= 0 || messages.slice(0, cut).length < 4) return null;
+  const early = messages.slice(0, cut);
+  const keep = messages.slice(cut);
+  const summaryLines = early.map((m) => {
+    let c;
+    if (m.role === "tool") c = String(m.content || "").replace(/\s+/g, " ").slice(0, 100) || "(结果已省略)";
+    else if (m.role === "assistant") c = String(m.content || "").replace(/\s+/g, " ").slice(0, 100) || (m.tool_calls && m.tool_calls.length ? `[调用 ${m.tool_calls.length} 个工具]` : "(空)");
+    else c = String(m.content || "").replace(/\s+/g, " ").slice(0, 100);
+    return `- ${m.role}${m.role === "tool" ? `(${m.name || ""})` : ""}: ${c}`;
+  }).filter(Boolean).join("\n");
+  const summaryMsg = { role: "system", content: `[对话摘要 — 早期 ${early.length} 条消息已被自动压缩]\n${summaryLines}` };
+  return { messages: [summaryMsg, ...keep], before: total, after: estimateTokens(summaryMsg.content) + tail };
+}
+
 /* ───────── 撤销/回滚（对标 DeepKing 撤回对话） ───────── */
 function recordUndo(workdir, name, args, onUndo) {
   if (!onUndo) return;
@@ -417,7 +445,7 @@ function applyUndo(entries) {
 async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent, vision, onUndo, runId) {
   const persona = MODES[mode] || MODES.dsh;
   const useTools = config.tools !== false && config.max !== false;
-  const maxIter = 25;
+  const maxIter = 40; // 与循环内压缩配合：项目级分析一次最多 40 轮，上下文超阈值会自动摘要压缩
   const com = compressHistory(history.filter((m) => m.role !== "system"));
   let messages = com.history.map((m) => ({ role: m.role, content: m.content, tool_calls: m.tool_calls, tool_call_id: m.tool_call_id, name: m.name })).filter((m) => m.role !== "system");
   messages.push({ role: "user", content: userMessage });
@@ -453,9 +481,15 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
       messages.push({ role: "tool", tool_call_id: call.id, name: call.name, content: (result.success ? "" : "[ERROR] ") + output });
       if (/^(write|edit|delete|bash)$/.test(call.name) && result.success) onEvent({ type: "file_changed", reason: call.name });
     }
+    /* 每轮结束后检查：上下文超阈值就把早期轮次摘要压缩，保留最近内容 */
+    const compacted = compactInLoop(messages, LOOP_KEEP_BUDGET);
+    if (compacted) {
+      messages = compacted.messages;
+      onEvent({ type: "context_compressed", before_tokens: compacted.before, after_tokens: compacted.after, in_loop: true });
+    }
   }
   /* 步数用尽：若模型全程在调用工具、始终没给出结论文字，追加一次"强制总结轮"
-   *（不带工具，仅文字输出），避免出现"跑了 25 步却返回空内容"的假死现象 */
+   *（不带工具，仅文字输出），避免出现"跑满步数却返回空内容"的假死现象 */
   if (!(finalContent && String(finalContent).trim())) {
     onEvent({ type: "iteration", current: maxIter + 1, max: maxIter + 1 });
     messages.push({
