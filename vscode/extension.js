@@ -17,7 +17,7 @@ function loadHost() {
   for (const c of candidates) if (require("fs").existsSync(c)) return require(c);
   throw new Error("DeepKing 核心缺失（shared/node-host.js）。请重新安装扩展。");
 }
-const { runAgentLoop } = loadHost();
+const { runAgentLoop, handleMultimodal } = loadHost();
 
 /* Webview UI 目录：安装版(./shared/webview) 优先，仓库开发版(../shared/webview) 兜底 */
 const WEBVIEW_DIR = require("fs").existsSync(path.join(__dirname, "shared", "webview"))
@@ -27,8 +27,7 @@ const WEBVIEW_DIR = require("fs").existsSync(path.join(__dirname, "shared", "web
 class DeepKingViewProvider {
   constructor(context) {
     this.context = context;
-    this.view = null;
-    this.config = context.globalState.get("deepking.config") || { apiKey: "", baseUrl: "https://api.deepseek.com", model: "deepseek-chat", workdir: "" };
+    this.config = context.globalState.get("deepking.config") || { apiKey: "", baseUrl: "https://api.deepseek.com", model: "deepseek-chat", workdir: "", tools: true, max: true, multimodal: true, vision: {} };
   }
   resolveWebviewView(webviewView) {
     this.view = webviewView;
@@ -36,16 +35,19 @@ class DeepKingViewProvider {
     webviewView.webview.html = this.html(webviewView.webview);
     webviewView.webview.onDidReceiveMessage(async (msg) => {
       if (!msg) return;
+      const workdir = this.config.workdir || (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0].uri.fsPath) || process.cwd();
+      const merged = { ...this.config, ...(msg.settings || {}) };
+      const config = {
+        apiKey: merged.apiKey || "", baseUrl: merged.baseUrl || "https://api.deepseek.com", model: merged.model || "deepseek-chat",
+        tools: merged.tools, max: merged.max, multimodal: merged.multimodal, mode: msg.mode || "dsh",
+      };
+      const vision = merged.vision || null;
+      const post = (ev) => this.ev(ev);
       if (msg.type === "chat") {
-        const workdir = this.config.workdir || (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0].uri.fsPath) || process.cwd();
-        const config = {
-          apiKey: this.config.apiKey || "",
-          baseUrl: this.config.baseUrl || "https://api.deepseek.com",
-          model: this.config.model || "deepseek-chat",
-        };
-        if (!config.apiKey) { this.ev({ type: "error", message: "请先在右上角 ⚙ 设置 DeepSeek API Key" }); return; }
-        const post = (ev) => this.ev(ev);
-        await runAgentLoop(config, msg.mode || "dsh", msg.content || "", msg.history || [], workdir, post);
+        if (!config.apiKey) { this.ev({ type: "error", message: "请在上方配置 DeepSeek API Key" }); return; }
+        await runAgentLoop(config, msg.mode || "dsh", msg.content || "", msg.history || [], workdir, post, vision);
+      } else if (msg.type === "multimodal") {
+        await handleMultimodal(config, vision, msg.dataUrl || "", msg.mime || "png", msg.prompt || "", workdir, post);
       } else if (msg.type === "saveConfig") {
         this.config = { ...this.config, ...(msg.config || {}) };
         this.context.globalState.update("deepking.config", this.config);

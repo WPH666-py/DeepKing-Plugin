@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 /* ============================================================
- * DeepKing-Plugin · shared/node-host.js
- * DeepKing AI 助手核心（移植自 DeepKing Rust 端：deepseek.rs + tools.rs + agent_loop.rs）
- * 双模式：
- *   - 作为库被 vscode/extension.js require（进程内 Agent Loop + 工具）
- *   - `node node-host.js --port 0` 启动 JSON-RPC 服务（JetBrains/浏览器模式）
+ * DeepKing-Plugin · shared/node-host.js  (v0.1.3 功能对齐 DeepKing)
+ * - DeepSeek 客户端 + Agent Loop（含上下文自动压缩）
+ * - 工具集：read/write/edit/bash/grep/glob/todo/task/check_runtime
+ *           delete/read_image(视觉)/read_pdf/read_excel/web_search/install/check python
+ * - 多模态视觉：ModLens / DeepSeek-OCR（OpenAI 兼容 vision API，移植自 DeepKing vision.rs）
+ * - 双模式：库模式（VSCode require） / --port 服务模式（JetBrains/浏览器）
  * ============================================================ */
 "use strict";
 const fs = require("fs");
 const path = require("path");
-const { execFile, spawn } = require("child_process");
+const { execFile } = require("child_process");
 
-/* ───────── 模式 Persona（精简版，源自 DeepKing personas + agent_loop directives） ───────── */
+/* ───────── 模式 Persona ───────── */
 const MODES = {
   dsh: {
     label: "DSH (Harness)",
@@ -22,7 +23,7 @@ Rules:
 - Use bash for any build/test/run. Prefer small, runnable iterations; verify after each step.
 - Before editing an existing file, call read on it first (exact content for old_string).
 - If a tool call fails twice, switch approach and explain why.
-- When done, output a concise summary with file paths. Max iterations: 20.`,
+- When done, output a concise summary with file paths. Max iterations: 25.`,
   },
   dsk: {
     label: "DSK (K3)",
@@ -55,7 +56,7 @@ Rules:
   },
 };
 
-/* ───────── 工具 Schema（对标 DeepKing 15 工具核心集） ───────── */
+/* ───────── 工具 Schema（对标 DeepKing 15 工具） ───────── */
 const TOOL_SCHEMAS = [
   tool("read", "Read a file from the workspace. Returns lines with numbers. Use offset/limit for large files.", {
     type: "object", properties: { file_path: { type: "string" }, offset: { type: "integer" }, limit: { type: "integer" } }, required: ["file_path"],
@@ -65,6 +66,9 @@ const TOOL_SCHEMAS = [
   }),
   tool("edit", "Edit a file by replacing an exact string (old_string). MUST read the file first.", {
     type: "object", properties: { file_path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" }, replace_all: { type: "boolean" } }, required: ["file_path", "old_string", "new_string"],
+  }),
+  tool("delete", "Delete a file (or empty folder). Use with caution.", {
+    type: "object", properties: { file_path: { type: "string" } }, required: ["file_path"],
   }),
   tool("bash", "Execute a shell command in the workspace root (Windows: cmd /C). Returns stdout+stderr and exit code.", {
     type: "object", properties: { command: { type: "string" }, timeout_ms: { type: "integer" } }, required: ["command"],
@@ -84,27 +88,48 @@ const TOOL_SCHEMAS = [
   tool("check_runtime", "Check whether a runtime (python/node/java/gcc) is available.", {
     type: "object", properties: { name: { type: "string" } }, required: ["name"],
   }),
-  tool("read_image", "Read an image file by path and return a short description you can rely on (model vision may be used).", {
+  tool("read_image", "Analyze an image with the vision engine (ModLens/DeepSeek-OCR) and return structured text evidence.", {
     type: "object", properties: { image_path: { type: "string" } }, required: ["image_path"],
+  }),
+  tool("read_pdf", "Extract text from a PDF using Python pymupdf (fitz).", {
+    type: "object", properties: { file_path: { type: "string" } }, required: ["file_path"],
+  }),
+  tool("read_excel", "Extract an Excel sheet as Markdown table using Python pandas (if installed).", {
+    type: "object", properties: { file_path: { type: "string" }, sheet: { type: "string" } }, required: ["file_path"],
+  }),
+  tool("web_search", "Search the web with DuckDuckGo (lightweight, no API key). Returns top results title+snippet+url.", {
+    type: "object", properties: { query: { type: "string" }, max_results: { type: "integer" } }, required: ["query"],
+  }),
+  tool("install_python_package", "Install a Python package via pip into the default environment.", {
+    type: "object", properties: { package: { type: "string" } }, required: ["package"],
+  }),
+  tool("check_python_package", "Check whether a Python package is importable (returns version if possible).", {
+    type: "object", properties: { package: { type: "string" } }, required: ["package"],
   }),
 ];
 function tool(name, description, parameters) { return { type: "function", function: { name, description, parameters } }; }
 
-/* ───────── 工具执行（移植自 DeepKing tools.rs） ───────── */
+/* ───────── 工具执行 ───────── */
 function resolvePath(workdir, p) { return path.isAbsolute(p) ? p : path.join(workdir, p); }
+function truncate(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n) + `... [truncated, ${s.length} total chars]` : s; }
 
-function execTool(workdir, name, args) {
+function execTool(workdir, name, args, ctx) {
   try {
     if (name === "read") return toolRead(workdir, args);
     if (name === "write") return toolWrite(workdir, args);
     if (name === "edit") return toolEdit(workdir, args);
+    if (name === "delete") return toolDelete(workdir, args);
     if (name === "glob") return toolGlob(workdir, args);
     if (name === "grep") return toolGrep(workdir, args);
-    if (name === "todo_write" || name === "task") return { success: true, output: `[${name}] 任务列表已更新（前端展示）`, data: { ok: true } };
+    if (name === "todo_write" || name === "task") return { success: true, output: `[${name}] 任务列表已更新`, data: { ok: true } };
     if (name === "check_runtime") return toolCheckRuntime(args);
-    if (name === "read_image") return { success: false, output: "webview 中无法本地解码图片；请在 VSCode 中打开图片查看，或用 bash 描述文件信息。", data: null };
-    if (name === "bash") return { success: false, output: "bash 为异步工具，见 runBash()", data: null };
-    if (name === "web_search") return { success: false, output: "插件版暂未内置搜索（可用 bash + python 实现），请改用其他方式。", data: null };
+    if (name === "read_image") return toolReadImage(args, ctx && ctx.vision);
+    if (name === "read_pdf") return toolReadPdf(workdir, args);
+    if (name === "read_excel") return toolReadExcel(workdir, args);
+    if (name === "web_search") return toolWebSearch(args);
+    if (name === "install_python_package") return runBash(workdir, `python -m pip install -q ${args.package || ""}`, 120000).then((r) => ({ success: r.success, output: truncate(r.output, 2000), data: r.data }));
+    if (name === "check_python_package") return toolCheckPythonPackage(args);
+    if (name === "bash") return { success: false, output: "bash 走异步 runBash", data: null };
     return { success: false, output: `Unknown tool: ${name}`, data: null };
   } catch (e) {
     return { success: false, output: `工具执行错误: ${e.message}`, data: null };
@@ -114,64 +139,55 @@ function execTool(workdir, name, args) {
 function toolRead(workdir, args) {
   const full = resolvePath(workdir, args.file_path || "");
   if (!fs.existsSync(full)) return { success: false, output: `读取失败: 文件不存在 ${args.file_path}`, data: null };
-  let content = fs.readFileSync(full, "utf8").replace(/^\uFEFF/, "");
-  const lines = content.split(/\r?\n/);
-  const total = lines.length;
+  const lines = fs.readFileSync(full, "utf8").replace(/^\uFEFF/, "").split(/\r?\n/);
   const start = Math.max(0, args.offset || 0);
-  const end = Math.min(total, start + (args.limit || 200));
-  const out = lines.slice(start, end).map((l, i) => `${String(start + i + 1).padStart(6)}\t${l}`).join("\n");
-  return { success: true, output: `File: ${args.file_path}\nLines ${start + 1}-${end} of ${total}\n\n${out}`, data: { total_lines: total } };
+  const end = Math.min(lines.length, start + (args.limit || 200));
+  return { success: true, output: `File: ${args.file_path}\nLines ${start + 1}-${end} of ${lines.length}\n\n${lines.slice(start, end).map((l, i) => `${String(start + i + 1).padStart(6)}\t${l}`).join("\n")}`, data: { total_lines: lines.length } };
 }
-
 function toolWrite(workdir, args) {
   const full = resolvePath(workdir, args.file_path || "");
-  const content = args.content || "";
   fs.mkdirSync(path.dirname(full), { recursive: true });
-  fs.writeFileSync(full, content, "utf8");
-  return { success: true, output: `Wrote ${Buffer.byteLength(content)} chars to ${args.file_path}`, data: { bytes_written: Buffer.byteLength(content) } };
+  fs.writeFileSync(full, args.content || "", "utf8");
+  return { success: true, output: `Wrote ${Buffer.byteLength(args.content || "")} chars to ${args.file_path}`, data: { bytes_written: Buffer.byteLength(args.content || "") } };
 }
-
 function toolEdit(workdir, args) {
   const full = resolvePath(workdir, args.file_path || "");
-  const oldString = args.old_string || "";
-  const newString = args.new_string || "";
   if (!fs.existsSync(full)) return { success: false, output: `编辑失败: 文件不存在 ${args.file_path}`, data: null };
   const content = fs.readFileSync(full, "utf8");
+  const oldString = args.old_string || "";
   if (!content.includes(oldString)) return { success: false, output: `old_string 未在 ${args.file_path} 中找到，请先 read 获取精确内容`, data: null };
   const count = content.split(oldString).length - 1;
   if (!args.replace_all && count > 1) return { success: false, output: `old_string 出现 ${count} 次，请设置 replace_all=true 或提供更多上下文`, data: null };
-  const next = args.replace_all ? content.split(oldString).join(newString) : content.replace(oldString, newString);
+  const next = args.replace_all ? content.split(oldString).join(args.new_string || "") : content.replace(oldString, args.new_string || "");
   fs.writeFileSync(full, next, "utf8");
   return { success: true, output: `Replaced ${args.replace_all ? count : 1} occurrence(s) in ${args.file_path}`, data: { replacements: args.replace_all ? count : 1 } };
 }
-
-/* 简化 glob：仅支持 * ? ** */
+function toolDelete(workdir, args) {
+  const full = resolvePath(workdir, args.file_path || "");
+  if (!fs.existsSync(full)) return { success: false, output: `删除失败: 不存在 ${args.file_path}`, data: null };
+  fs.rmSync(full, { recursive: true, force: true });
+  return { success: true, output: `已删除 ${args.file_path}`, data: { deleted: true } };
+}
 function compileGlob(pat) {
-  let reg = "";
-  let i = 0;
+  let reg = "", i = 0;
   while (i < pat.length) {
     const c = pat[i];
     if (c === "*" && pat[i + 1] === "*") { reg += ".*"; i += 2; continue; }
     if (c === "*") { reg += "[^\\/]*"; i++; continue; }
     if (c === "?") { reg += "[^\\/]"; i++; continue; }
-    if (c === ".") { reg += "\\."; i++; continue; }
-    if (c === "." || c === "-") { reg += c; i++; continue; }
-    if ("^$()+[]{}|\\".includes(c)) { reg += "\\" + c; i++; continue; }
+    if ("^$()+[]{}|\\.".includes(c)) { reg += "\\" + c; i++; continue; }
     reg += c; i++;
   }
-  return new RegExp("^" + reg.replace(/\\\//g, "/") + "$");
+  return new RegExp("^" + reg + "$");
 }
 function toolGlob(workdir, args) {
   const base = path.isAbsolute(args.path || "") ? args.path : path.join(workdir, args.path || ".");
-  const pat = (args.pattern || "**/*").replace(/\\/g, "/");
-  const re = compileGlob(pat);
+  const re = compileGlob((args.pattern || "**/*").replace(/\\/g, "/"));
   const out = [];
-  const SKIP = new Set(["node_modules", ".git", "target", "dist", ".venv", "venv", "__pycache__", ".idea", ".vscode"]);
+  const SKIP = new Set(["node_modules", ".git", "target", "dist", ".venv", "venv", "__pycache__", ".idea", ".vscode", ".trae", ".trae-cn", ".cursor"]);
   (function walk(dir, rel) {
-    let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    let entries; try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
-      if (e.name.startsWith(".") && SKIP.has(e.name)) continue;
       if (SKIP.has(e.name)) continue;
       const r = rel ? rel + "/" + e.name : e.name;
       if (e.isDirectory()) walk(path.join(dir, e.name), r);
@@ -180,28 +196,22 @@ function toolGlob(workdir, args) {
   })(base, "");
   return { success: true, output: out.slice(0, 200).join("\n") || "(无匹配)", data: { count: out.length } };
 }
-
 function toolGrep(workdir, args) {
   const base = path.isAbsolute(args.path || "") ? args.path : path.join(workdir, args.path || ".");
-  let re;
-  try { re = new RegExp(args.pattern || "", "i"); } catch (e) { return { success: false, output: `正则无效: ${e.message}`, data: null }; }
-  const ext = args.include_glob ? args.include_glob.replace(/[.*]/g, (m) => (m === "." ? "\\." : ".*")) : null;
+  let re; try { re = new RegExp(args.pattern || "", "i"); } catch (e) { return { success: false, output: `正则无效: ${e.message}`, data: null }; }
   const out = [];
-  const SKIP = new Set(["node_modules", ".git", "target", "dist", ".venv", "venv", "__pycache__", ".idea"]);
+  const SKIP = new Set(["node_modules", ".git", "target", "dist", ".venv", "venv", "__pycache__", ".idea", ".trae", ".trae-cn", ".cursor"]);
   let scanned = 0;
   (function walk(dir) {
-    let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    let entries; try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       if (SKIP.has(e.name)) continue;
       const p = path.join(dir, e.name);
       if (e.isDirectory()) { walk(p); continue; }
-      if (ext && !p.endsWith(ext)) continue;
       if (/\.(exe|dll|so|bin|png|jpg|jpeg|gif|ico|webp|db|pyc)$/i.test(e.name)) continue;
       scanned++;
       if (out.length >= 200) continue;
-      let lines;
-      try { lines = fs.readFileSync(p, "utf8").split(/\r?\n/); } catch { continue; }
+      let lines; try { lines = fs.readFileSync(p, "utf8").split(/\r?\n/); } catch { continue; }
       for (let i = 0; i < lines.length && out.length < 200; i++) {
         if (re.test(lines[i])) out.push(`${path.relative(workdir, p).replace(/\\/g, "/")}:${i + 1}: ${lines[i].trim().slice(0, 180)}`);
       }
@@ -209,15 +219,71 @@ function toolGrep(workdir, args) {
   })(base);
   return { success: true, output: out.length ? out.join("\n") : `(无匹配，已扫描 ${scanned} 个文件)`, data: { scanned } };
 }
-
 function toolCheckRuntime(args) {
   const cmd = (args.name || "").toLowerCase();
   const bin = { python: ["py", "-3", "--version"], node: ["node", "--version"], java: ["java", "-version"], gcc: ["gcc", "--version"] }[cmd];
   if (!bin) return { success: false, output: `未知运行时: ${args.name}`, data: null };
   return new Promise((resolve) => {
-    execFile(bin[0], bin.slice(1), { timeout: 5000 }, (err, stdout, stderr) => {
-      resolve({ success: !err, output: err ? `[exit ${err.code ?? -1}] ${String(err.message).slice(0, 200)}` : String(stdout || stderr).trim(), data: { available: !err } });
+    execFile(bin[0], bin.slice(1), { timeout: 5000, windowsHide: true }, (err, stdout, stderr) => {
+      resolve({ success: !err, output: err ? `[exit ${err.code ?? -1}] ${String(err.stderr || err.message).slice(0, 200)}` : String(stdout || stderr).trim(), data: { available: !err } });
     });
+  });
+}
+function toolCheckPythonPackage(args) {
+  const pkg = (args.package || "").replace(/'/g, "");
+  return runBash(process.cwd(), `python -c "import ${pkg}; print(getattr(${pkg}, '__version__', 'installed'))"`, 30000)
+    .then((r) => ({ success: r.success, output: truncate(r.output, 800), data: r.data }));
+}
+function toolReadImage(args, visionCfg) {
+  if (!visionCfg || !visionCfg.apiKey) return { success: false, output: "视觉引擎未配置（设置 → 视觉识别填写 API Key）", data: null };
+  return analyzeImage(visionCfg, resolvePath(process.cwd(), args.image_path || ""), null)
+    .then((text) => ({ success: true, output: truncate(text, 4000), data: { provider: visionCfg.provider } }))
+    .catch((e) => ({ success: false, output: "视觉识别失败: " + e.message, data: null }));
+}
+function toolReadPdf(workdir, args) {
+  const full = resolvePath(workdir, args.file_path || "").replace(/\\/g, "/");
+  const script = `import sys\nimport fitz\ntry:\n doc=fitz.open(r'${full}')\n print('\\n'.join(p.get_text() for p in doc))\nexcept Exception as e:\n print('ERROR:',e,file=sys.stderr)\n sys.exit(1)\n`;
+  return runPython(workdir, script, 60000);
+}
+function toolReadExcel(workdir, args) {
+  const full = resolvePath(workdir, args.file_path || "").replace(/\\/g, "/");
+  const sheet = (args.sheet || "0").replace(/'/g, "");
+  const script = `import sys\nimport pandas as pd\ntry:\n df=pd.read_excel(r'${full}',sheet_name=${sheet !== "0" ? "'" + sheet + "'" : 0})\n print(df.to_markdown(index=False))\nexcept ImportError as e:\n print('ERROR: 需要 pandas/openpyxl，请先 pip install pandas openpyxl', file=sys.stderr); sys.exit(2)\nexcept Exception as e:\n print('ERROR:',e,file=sys.stderr); sys.exit(1)\n`;
+  return runPython(workdir, script, 60000);
+}
+function runPython(workdir, script, timeoutMs) {
+  return new Promise((resolve) => {
+    const tryRun = (py, attempt) => execFile(py, ["-c", script], { cwd: workdir, timeout: timeoutMs || 60000, maxBuffer: 8 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+      const code = err ? (typeof err.code === "number" ? err.code : -1) : 0;
+      const text = String(stdout || "") + (stderr ? "\n[stderr]\n" + stderr : "");
+      if ((code === 9009 || code === -1) && attempt < 2) return tryRun("python", attempt + 1);
+      resolve({ success: code === 0, output: truncate(`[exit ${code}]\n${text}`, 6000), data: { exit_code: code } });
+    });
+    tryRun(process.platform === "win32" ? "py" : "python3", 0);
+  });
+}
+function toolWebSearch(args) {
+  const q = encodeURIComponent(args.query || "");
+  const max = Math.min(10, args.max_results || 5);
+  return new Promise((resolve) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    fetch(`https://html.duckduckgo.com/html/?q=${q}`, { headers: { "User-Agent": "Mozilla/5.0" }, signal: ctrl.signal })
+      .then((r) => r.text())
+      .then((html) => {
+        clearTimeout(timer);
+        const items = [];
+        const re = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
+        let m;
+        while ((m = re.exec(html)) && items.length < max) {
+          const url = m[1].replace(/&amp;/g, "&");
+          const title = m[2].replace(/<[^>]+>/g, "").trim();
+          const snippet = m[3].replace(/<[^>]+>/g, "").trim();
+          items.push(`- ${title}\n  ${snippet}\n  ${url}`);
+        }
+        resolve({ success: items.length > 0, output: items.length ? items.join("\n\n") : "(无结果，DuckDuckGo 可能返回了验证页)", data: { count: items.length } });
+      })
+      .catch((e) => { clearTimeout(timer); resolve({ success: false, output: "搜索失败: " + e.message, data: null }); });
   });
 }
 
@@ -226,69 +292,112 @@ function runBash(workdir, command, timeoutMs) {
   return new Promise((resolve) => {
     for (const p of DANGEROUS) if (command.includes(p)) return resolve({ success: false, output: `BLOCKED: 危险命令模式 (${p})`, data: { exit_code: -1 } });
     const isWin = process.platform === "win32";
-    const shell = isWin ? "cmd" : "sh";
     const args = isWin ? ["/D", "/S", "/C", `set PYTHONIOENCODING=utf-8&& ${command}`] : ["-c", command];
-    const child = execFile(shell, args, { cwd: workdir, maxBuffer: 8 * 1024 * 1024, timeout: timeoutMs || 30000, windowsHide: true }, (err, stdout, stderr) => {
+    execFile(isWin ? "cmd" : "sh", args, { cwd: workdir, maxBuffer: 8 * 1024 * 1024, timeout: timeoutMs || 30000, windowsHide: true }, (err, stdout, stderr) => {
       const code = err ? (typeof err.code === "number" ? err.code : -1) : 0;
-      const out = String(stdout || "");
-      const errOut = String(stderr || "");
-      const combined = errOut ? `${out}\n[stderr]\n${errOut}` : out;
-      resolve({ success: code === 0, output: `[exit ${code}]\n${combined.slice(0, 20000)}`, data: { exit_code: code } });
+      const combined = stderr ? `${stdout}\n[stderr]\n${stderr}` : `${stdout}`;
+      resolve({ success: code === 0, output: truncate(`[exit ${code}]\n${combined}`, 20000), data: { exit_code: code } });
     });
-    child.on("error", (e) => resolve({ success: false, output: `无法启动命令: ${e.message}`, data: { exit_code: -1 } }));
   });
 }
 
-/* ───────── DeepSeek 客户端（移植自 deepseek.rs） ───────── */
+/* ───────── 多模态视觉（移植自 DeepKing vision.rs：ModLens / DeepSeek-OCR） ───────── */
+const VISION_DEFAULT_PROMPT = {
+  modlens: "请识别这张图片并返回结构化 JSON 证据，包含：ocr（图中全部文字）、layout（版面/区域描述）、semantics(图片语义、场景、意图)。若图片是报错截图或 UI 设计稿，请在 semantics 中重点描述。",
+  "deepseek-ocr": "请对这张图片做高质量的文档 OCR：提取其中的全部文字、公式、表格，并尽量保留版面结构。表格用 Markdown 表格呈现，公式保留 LaTeX。",
+};
+function guessMime(p) { const e = path.extname(p).toLowerCase(); return { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp" }[e] || "image/png"; }
+async function analyzeImage(vision, imagePath, prompt) {
+  if (!vision || !vision.apiKey) throw new Error("Vision API Key not configured.");
+  const b64 = fs.readFileSync(imagePath).toString("base64");
+  const dataUrl = `data:${guessMime(imagePath)};base64,${b64}`;
+  const provider = vision.provider === "deepseek-ocr" ? "deepseek-ocr" : "modlens";
+  const system = provider === "deepseek-ocr"
+    ? "You are a precise document OCR engine. Return only extraction results with layout preserved."
+    : "You are ModLens, a vision engine that turns images into structured text evidence for a text-only LLM.";
+  const hint = provider === "deepseek-ocr" ? "输出 Markdown，保留标题层级与表格结构。" : "输出一个 JSON 对象：{ \"ocr\": string, \"layout\": string, \"semantics\": string }。";
+  const body = {
+    model: vision.model || "gpt-4o-mini",
+    max_tokens: 4096,
+    temperature: 0.2,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: [{ type: "text", text: `${prompt || VISION_DEFAULT_PROMPT[provider]}\n\n${hint}` }, { type: "image_url", image_url: { url: dataUrl } }] },
+    ],
+  };
+  const url = `${(vision.baseUrl || "https://api.openai.com/v1").replace(/\/$/, "")}/chat/completions`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 180000);
+  try {
+    const resp = await fetch(url, { method: "POST", headers: { "Authorization": `Bearer ${vision.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
+    if (!resp.ok) throw new Error(`Vision API error (${resp.status}): ${(await resp.text().catch(() => "")).slice(0, 300)}`);
+    const json = await resp.json();
+    const text = ((json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content) || "").trim();
+    if (!text) throw new Error("Vision model returned empty result.");
+    return text;
+  } finally { clearTimeout(timer); }
+}
+function saveTempImage(dataUrl, ext, workdir) {
+  const b64 = String(dataUrl || "").split(",").pop() || "";
+  const bytes = Buffer.from(b64, "base64");
+  if (!bytes.length) throw new Error("图片数据无效");
+  const dir = path.join(workdir, ".deepking-paste");
+  fs.mkdirSync(dir, { recursive: true });
+  const p = path.join(dir, `img_${Date.now()}.${(ext || "png").replace(/^\./, "")}`);
+  fs.writeFileSync(p, bytes);
+  return p;
+}
+
+/* ───────── DeepSeek 客户端 ───────── */
 function normalizeCall(call) {
   let args = call.function.arguments;
   if (typeof args === "string") { try { args = JSON.parse(args); } catch { args = {}; } }
   return { id: call.id, name: call.function.name, arguments: args };
 }
 async function deepseekChat(config, system, messages, tools) {
-  const body = {
-    model: config.model,
-    messages: [{ role: "system", content: system }, ...messages],
-    stream: false,
-    max_tokens: 8192,
-    temperature: 0.7,
-    tools,
-    tool_choice: tools ? "auto" : undefined,
-  };
-  const url = `${config.baseUrl.replace(/\/$/, "")}/v1/chat/completions`;
+  const body = { model: config.model || "deepseek-chat", messages: [{ role: "system", content: system }, ...messages], stream: false, max_tokens: 16384, temperature: 0.7 };
+  if (tools && tools.length) { body.tools = tools; body.tool_choice = "auto"; }
+  const url = `${(config.baseUrl || "https://api.deepseek.com").replace(/\/$/, "")}/v1/chat/completions`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 300000);
   try {
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      return { ok: false, error: `API error (${resp.status}): ${text.slice(0, 400)}` };
-    }
+    const resp = await fetch(url, { method: "POST", headers: { "Authorization": `Bearer ${config.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
+    if (!resp.ok) return { ok: false, error: `API error (${resp.status}): ${(await resp.text().catch(() => "")).slice(0, 400)}` };
     return { ok: true, data: await resp.json() };
-  } catch (e) {
-    return { ok: false, error: `Network error: ${e.message}` };
-  } finally {
-    clearTimeout(timer);
-  }
+  } catch (e) { return { ok: false, error: `Network error: ${e.message}` }; }
+  finally { clearTimeout(timer); }
 }
 
-/* ───────── Agent Loop（移植自 agent_loop.rs） ───────── */
-async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent) {
+/* ───────── 上下文自动压缩（移植自 DeepKing context.rs） ───────── */
+const CTX_MAX_TOKENS = 6000, CTX_THRESHOLD = 0.7, PRESERVE_TURNS = 8;
+function estimateTokens(text) { return Math.ceil(String(text || "").length / 2.5); }
+function compressHistory(history) {
+  const total = history.reduce((s, m) => s + estimateTokens(m.content), 0);
+  if (total <= CTX_MAX_TOKENS * CTX_THRESHOLD) return { history, compressed: false, before: total, after: total };
+  if (history.length <= PRESERVE_TURNS) return { history, compressed: false, before: total, after: total };
+  const early = history.slice(0, history.length - PRESERVE_TURNS);
+  const keep = history.slice(history.length - PRESERVE_TURNS);
+  const summary = early.map((m) => `- ${m.role}: ${String(m.content || "").replace(/\s+/g, " ").slice(0, 140)}`).join("\n");
+  const summaryMsg = { role: "system", content: `[对话摘要 — 早期 ${early.length} 条消息已被自动压缩]\n${summary}` };
+  const after = estimateTokens(summaryMsg.content) + keep.reduce((s, m) => s + estimateTokens(m.content), 0);
+  return { history: [summaryMsg, ...keep], compressed: true, before: total, after };
+}
+
+/* ───────── Agent Loop（agent_loop.rs；max/工具开关 + 压缩） ───────── */
+async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent, vision) {
   const persona = MODES[mode] || MODES.dsh;
+  const useTools = config.tools !== false && config.max !== false;
   const maxIter = 25;
-  let messages = history.filter((m) => m.role !== "system" && m.id === undefined || true).map((m) => ({ role: m.role, content: m.content, tool_calls: m.tool_calls, tool_call_id: m.tool_call_id, name: m.name })).filter((m) => m.role !== "system");
+  const com = compressHistory(history.filter((m) => m.role !== "system"));
+  let messages = com.history.map((m) => ({ role: m.role, content: m.content, tool_calls: m.tool_calls, tool_call_id: m.tool_call_id, name: m.name })).filter((m) => m.role !== "system");
   messages.push({ role: "user", content: userMessage });
-  let finalContent = "";
-  let toolCount = 0;
-  onEvent({ type: "started", max_iterations: maxIter });
+  let finalContent = "", toolCount = 0;
+  onEvent({ type: "started", max_iterations: maxIter, use_tools: useTools });
+  if (com.compressed) onEvent({ type: "context_compressed", before_tokens: com.before, after_tokens: com.after });
+  const schemas = useTools ? TOOL_SCHEMAS : null;
   for (let iter = 0; iter < maxIter; iter++) {
     onEvent({ type: "iteration", current: iter + 1, max: maxIter });
-    const resp = await deepseekChat(config, persona.system, messages, TOOL_SCHEMAS);
+    const resp = await deepseekChat(config, persona.system, messages, schemas);
     if (!resp.ok) { onEvent({ type: "error", message: resp.error }); return; }
     const choice = resp.data.choices && resp.data.choices[0];
     if (!choice) { onEvent({ type: "error", message: "无有效响应" }); return; }
@@ -297,67 +406,77 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
     if (msg.content) onEvent({ type: "assistant_text", content: msg.content });
     const calls = msg.tool_calls || [];
     messages.push({ role: "assistant", content: msg.content || null, tool_calls: msg.tool_calls || undefined });
-    if (!calls.length) {
-      onEvent({ type: "done", content: finalContent, total_iterations: iter + 1, total_tool_calls: toolCount });
-      return;
-    }
+    if (!calls.length) { onEvent({ type: "done", content: finalContent, total_iterations: iter + 1, total_tool_calls: toolCount }); return; }
     for (const raw of calls) {
       toolCount++;
       const call = normalizeCall(raw);
       onEvent({ type: "tool_call_requested", id: call.id, name: call.name, arguments: call.arguments });
       let result;
       if (call.name === "bash") result = await runBash(workdir, call.arguments.command || "", call.arguments.timeout_ms);
-      else { result = execTool(workdir, call.name, call.arguments); if (result instanceof Promise) result = await result; }
-      const output = (result.output || "").length > 4000 ? result.output.slice(0, 3200) + `... [truncated, ${result.output.length} total chars]` : result.output;
+      else { result = execTool(workdir, call.name, call.arguments, { vision }); if (result instanceof Promise) result = await result; }
+      const output = truncate(result.output || "", 3200);
       onEvent({ type: "tool_call_executed", id: call.id, name: call.name, success: result.success, output });
       messages.push({ role: "tool", tool_call_id: call.id, name: call.name, content: (result.success ? "" : "[ERROR] ") + output });
-      if (/^(write|edit|bash|delete)$/.test(call.name) && result.success) onEvent({ type: "file_changed", reason: call.name });
+      if (/^(write|edit|delete|bash)$/.test(call.name) && result.success) onEvent({ type: "file_changed", reason: call.name });
     }
   }
   onEvent({ type: "done", content: finalContent, total_iterations: maxIter, total_tool_calls: toolCount });
 }
 
-/* ───────── CLI / JSON-RPC 服务模式（JetBrains / 浏览器使用） ───────── */
+/* ───────── 多模态流程：识图 → 结合问题发送 ───────── */
+async function handleMultimodal(config, vision, dataUrl, mime, prompt, workdir, onEvent) {
+  if (!vision || !vision.apiKey) { onEvent({ type: "error", message: "未配置视觉引擎（设置 → 视觉识别：API Key/Base URL/模型）" }); return; }
+  try {
+    const imgPath = saveTempImage(dataUrl, mime, workdir);
+    onEvent({ type: "started", max_iterations: 25, use_tools: config.tools !== false });
+    onEvent({ type: "assistant_text", content: "📷 正在识别图片…(ModLens/DeepSeek-OCR)\n" });
+    const text = await analyzeImage(vision, imgPath, null);
+    onEvent({ type: "assistant_text", content: `\n✅ 图片识别结果（${vision.provider || "modlens"}）：\n${text}\n\n` });
+    const finalPrompt = (prompt && prompt.trim()) ? `${prompt.trim()}\n\n[用户粘贴了一张图片，以下是视觉识别结果，请结合回答]：\n${text}` : `用户粘贴了一张图片，以下是视觉识别结果，请描述并分析：\n${text}`;
+    await runAgentLoop(config, config.mode || "dsh", finalPrompt, [], workdir, onEvent, vision);
+  } catch (e) {
+    onEvent({ type: "error", message: "识图失败: " + e.message });
+  }
+}
+
+/* ───────── 服务模式（JetBrains / 浏览器） ───────── */
 function startServer(port, ready) {
   const http = require("http");
-  const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".png": "image/png", ".ico": "image/x-icon", ".json": "application/json" };
+  const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".png": "image/png", ".ico": "image/x-icon" };
   const WEBVIEW = path.join(__dirname, "webview");
   const server = http.createServer((req, res) => {
     const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "Content-Type", "Access-Control-Allow-Methods": "POST,OPTIONS" };
     if (req.method === "OPTIONS") { res.writeHead(204, cors); return res.end(); }
     if (req.url === "/rpc") { return handleRpc(req, res, cors); }
-    // 静态 Web UI（JetBrains JCEF / 浏览器模式共用）
     let p = decodeURIComponent((req.url || "/").split("?")[0]);
     if (p === "/") p = "/index.html";
     const file = path.normalize(path.join(WEBVIEW, p));
     if (!file.startsWith(path.normalize(WEBVIEW))) { res.writeHead(403, cors); return res.end("forbidden"); }
     if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) { res.writeHead(404, cors); return res.end("not found"); }
-    const ext = path.extname(file).toLowerCase();
-    res.writeHead(200, { ...cors, "Content-Type": MIME[ext] || "application/octet-stream", "Cache-Control": "no-cache" });
+    res.writeHead(200, { ...cors, "Content-Type": MIME[path.extname(file).toLowerCase()] || "application/octet-stream", "Cache-Control": "no-cache" });
     return res.end(fs.readFileSync(file));
   });
-  server.listen(port, "127.0.0.1", () => {
-    const addr = server.address();
-    ready(addr.port);
-  });
+  server.listen(port, "127.0.0.1", () => ready(server.address().port));
   return server;
 }
-
 function handleRpc(req, res, cors) {
   let raw = "";
   req.on("data", (c) => (raw += c));
   req.on("end", () => {
-    let msg;
-    try { msg = JSON.parse(raw); } catch { res.writeHead(400, cors); return res.end("bad json"); }
-    const config = { apiKey: (msg.config || {}).apiKey || "", baseUrl: (msg.config || {}).baseUrl || "https://api.deepseek.com", model: (msg.config || {}).model || "deepseek-chat" };
+    let msg; try { msg = JSON.parse(raw); } catch { res.writeHead(400, cors); return res.end("bad json"); }
+    const cfg = { ...(msg.config || {}) };
+    const vision = msg.vision || null;
     const events = [];
-    const p = runAgentLoop(config, msg.mode || "dsh", msg.content || "", msg.history || [], msg.workdir || process.cwd(), (ev) => events.push(ev));
+    const emit = (ev) => events.push(ev);
+    const workdir = msg.workdir || process.cwd();
+    const p = msg.type === "multimodal"
+      ? handleMultimodal(cfg, vision, msg.dataUrl, msg.mime, msg.prompt, workdir, emit)
+      : runAgentLoop(cfg, msg.mode || "dsh", msg.content || "", msg.history || [], workdir, emit, vision);
     p.then(() => { res.writeHead(200, { ...cors, "Content-Type": "application/json" }); res.end(JSON.stringify({ events })); });
   });
 }
 
-/* 库模式入口（VSCode 用） */
-module.exports = { runAgentLoop, MODES, TOOL_SCHEMAS, startServer, runBash, execTool };
+module.exports = { runAgentLoop, handleMultimodal, analyzeImage, saveTempImage, MODES, TOOL_SCHEMAS, startServer, runBash, execTool, compressHistory };
 
 if (require.main === module) {
   const portArg = process.argv.indexOf("--port");

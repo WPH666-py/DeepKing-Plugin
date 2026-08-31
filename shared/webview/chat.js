@@ -114,10 +114,18 @@
   function hideProgress() { const p = $("#progress"); if (p) p.style.display = "none"; }
   function updateSettingsUI() {
     const fill = (id, v) => { const n = document.getElementById(id); if (n) n.value = v == null ? "" : v; };
+    const chk = (id, v) => { const n = document.getElementById(id); if (n) n.checked = v !== false; };
     fill("setKey", state.settings.apiKey);
     fill("setBase", state.settings.baseUrl || "https://api.deepseek.com");
     fill("setModel", state.settings.model || "deepseek-chat");
     fill("setWorkdir", state.settings.workdir);
+    chk("swTools", state.settings.tools);
+    chk("swMax", state.settings.max);
+    chk("swMM", state.settings.multimodal);
+    fill("visionProvider", (state.settings.vision && state.settings.vision.provider) || "modlens");
+    fill("visionKey", state.settings.vision && state.settings.vision.apiKey);
+    fill("visionBase", (state.settings.vision && state.settings.vision.baseUrl) || "https://api.openai.com/v1");
+    fill("visionModel", (state.settings.vision && state.settings.vision.model) || "gpt-4o-mini");
     const wl = $("#workdirLabel"); if (wl) wl.textContent = state.settings.workdir || "(工作目录见设置)";
   }
   function saveSettingsFromUI() {
@@ -125,6 +133,16 @@
     state.settings.baseUrl = val("setBase").trim() || "https://api.deepseek.com";
     state.settings.model = val("setModel").trim() || "deepseek-chat";
     state.settings.workdir = val("setWorkdir").trim();
+    const chkV = (id) => { const n = document.getElementById(id); return n ? n.checked : true; };
+    state.settings.tools = chkV("swTools");
+    state.settings.max = chkV("swMax");
+    state.settings.multimodal = chkV("swMM");
+    state.settings.vision = {
+      provider: val("visionProvider").trim() || "modlens",
+      apiKey: val("visionKey").trim(),
+      baseUrl: val("visionBase").trim() || "https://api.openai.com/v1",
+      model: val("visionModel").trim() || "gpt-4o-mini",
+    };
     persist(state);
     if (vscode) { try { vscode.postMessage({ type: "saveConfig", config: state.settings }); } catch (_) {} }
     const wl = $("#workdirLabel"); if (wl) wl.textContent = state.settings.workdir || "(工作目录见设置)";
@@ -164,23 +182,37 @@
     });
   }
 
+  /* ── 粘贴图片（多模态）── */
+  function setPastedImage(dataUrl, mime, name) {
+    state.pasted = { dataUrl, mime, name };
+    const chip = $("#pasteChip"), img = $("#pastePreview"), nm = $("#pasteName");
+    if (chip && img) { img.src = dataUrl; chip.style.display = "flex"; }
+    if (nm) nm.textContent = name || "图片";
+    persist(state);
+  }
+  function clearPastedImage() { state.pasted = null; const chip = $("#pasteChip"); if (chip) chip.style.display = "none"; persist(state); }
+
   /* ── 发送 ── */
   async function send() {
     if (state.running) return;
     const input = $("#input");
     const text = (input ? input.value : "").trim();
-    if (!text) return;
+    if (!text && !state.pasted) return;
     saveSettingsFromUI();
-    state.messages.push({ role: "user", content: text });
+    const pasted = (state.settings.multimodal !== false && state.pasted) ? state.pasted : null;
+    state.messages.push({ role: "user", content: (pasted ? "📷[图片] " : "") + (text || "请描述这张图片。") });
     state.toolCalls = []; state.assistant = ""; state.progress = "";
     persist(state);
-    addMsg("user", text);
+    addMsg("user", (pasted ? "📷[图片] " : "") + (text || "请描述这张图片。"));
     if (input) input.value = "";
+    clearPastedImage();
     setRunning(true); showProgress();
-    const payload = { type: "chat", mode: ($("#mode") || {}).value || "dsh", content: text, history: state.messages.filter((m) => m.role !== "system"), settings: state.settings };
+    const payload = pasted
+      ? { type: "multimodal", dataUrl: pasted.dataUrl, mime: pasted.mime, prompt: text, mode: ($("#mode") || {}).value || "dsh", settings: state.settings }
+      : { type: "chat", mode: ($("#mode") || {}).value || "dsh", content: text, history: state.messages.filter((m) => m.role !== "system"), settings: state.settings };
     try {
       if (vscode) { vscode.postMessage(payload); return; }
-      const resp = await fetch(`http://127.0.0.1:${SERVER_PORT}/rpc`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      const resp = await fetch(`http://127.0.0.1:${SERVER_PORT}/rpc`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...payload, config: payload.type === "multimodal" ? payload.settings : payload.settings, vision: payload.settings.vision }) });
       const data = await resp.json();
       for (const ev of data.events || []) onAgentEvent(ev);
       if (!(data.events || []).some((x) => x.type === "done" || x.type === "error")) { onAgentEvent({ type: "error", message: "宿主未返回结果" }); }
@@ -194,7 +226,7 @@
     try { fn(); } catch (e) { showBanner("⚠️ 初始化失败[" + label + "]: " + e.message + "\n" + String((e.stack || "")).slice(0, 300)); }
   }
   step(() => {
-    const vt = document.getElementById("verTag"); if (vt) vt.textContent = "v0.1.2 ✓";
+    const vt = document.getElementById("verTag"); if (vt) vt.textContent = "v0.1.3 ✓";
   }, "ver");
   step(() => {
     const sel = $("#mode"); if (!sel) return;
@@ -216,8 +248,25 @@
     if (input) {
       input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
       input.addEventListener("input", () => setRunning(state.running));
+      /* Ctrl+V 粘贴图片 → 多模态 */
+      input.addEventListener("paste", (e) => {
+        const items = (e.clipboardData || {}).items; if (!items) return;
+        for (const it of items) {
+          if (it.kind === "file" && it.type && it.type.startsWith("image/")) {
+            e.preventDefault();
+            const f = it.getAsFile(); if (!f) return;
+            const reader = new FileReader();
+            reader.onload = () => setPastedImage(String(reader.result || ""), it.type, f.name || "粘贴图片");
+            reader.readAsDataURL(f);
+            return;
+          }
+        }
+      });
     }
   }, "send");
+  step(() => {
+    const btn = $("#pasteRemove"); if (btn) btn.addEventListener("click", clearPastedImage);
+  }, "paste");
   step(() => {
     const btn = $("#btnClear");
     if (btn) btn.addEventListener("click", () => {
