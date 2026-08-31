@@ -19,7 +19,10 @@ function loadHost() {
 }
 const { runAgentLoop } = loadHost();
 
-const WEBVIEW_DIR = path.join(__dirname, "..", "shared", "webview");
+/* Webview UI 目录：安装版(./shared/webview) 优先，仓库开发版(../shared/webview) 兜底 */
+const WEBVIEW_DIR = require("fs").existsSync(path.join(__dirname, "shared", "webview"))
+  ? path.join(__dirname, "shared", "webview")
+  : path.join(__dirname, "..", "shared", "webview");
 
 class DeepKingViewProvider {
   constructor(context) {
