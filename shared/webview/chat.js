@@ -172,11 +172,13 @@
         state.messages.push({ role: "assistant", content: state.assistant || k.content || "" });
         state.assistant = ""; state.toolCalls = []; state.progress = "";
         persist(state); setRunning(false); hideProgress(); renderAll();
+        return; // 结束：不再走底部 showProgress，防止"思考中"复现
       }
       else if (k.type === "error") {
         const text = "⚠️ 错误：" + k.message;
         state.messages.push({ role: "system", content: text });
         persist(state); setRunning(false); hideProgress(); renderAll();
+        return; // 结束
       }
       showProgress(); if (state.toolCalls.length) renderToolCalls();
     } catch (e) {
@@ -236,7 +238,7 @@
     try { fn(); } catch (e) { showBanner("⚠️ 初始化失败[" + label + "]: " + e.message + "\n" + String((e.stack || "")).slice(0, 300)); }
   }
   step(() => {
-    const vt = document.getElementById("verTag"); if (vt) vt.textContent = "v0.1.3 ✓";
+    const vt = document.getElementById("verTag"); if (vt) vt.textContent = "v0.1.4 ✓";
   }, "ver");
   step(() => {
     const sel = $("#mode"); if (!sel) return;
