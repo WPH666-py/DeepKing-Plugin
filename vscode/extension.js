@@ -7,7 +7,17 @@
 "use strict";
 const path = require("path");
 const vscode = require("vscode");
-const { runAgentLoop, MODES } = require(path.join(__dirname, "..", "shared", "node-host.js"));
+
+/* 共享核心解析：打包版(./shared) 优先，仓库开发版(../shared) 兜底 */
+function loadHost() {
+  const candidates = [
+    path.join(__dirname, "shared", "node-host.js"),
+    path.join(__dirname, "..", "shared", "node-host.js"),
+  ];
+  for (const c of candidates) if (require("fs").existsSync(c)) return require(c);
+  throw new Error("DeepKing 核心缺失（shared/node-host.js）。请重新安装扩展。");
+}
+const { runAgentLoop } = loadHost();
 
 const WEBVIEW_DIR = path.join(__dirname, "..", "shared", "webview");
 
