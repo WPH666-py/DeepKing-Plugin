@@ -9,9 +9,11 @@ function ideDirs() {
   const home = process.env.USERPROFILE || process.env.HOME || ".";
   const appData = process.env.APPDATA || path.join(home, "AppData", "Roaming");
   const dirs = [
+    path.join(home, ".trae-cn", "extensions"),
     path.join(home, ".trae", "extensions"),
     path.join(appData, "Trae", "extensions"),
     path.join(appData, "TraeCN", "extensions"),
+    path.join(appData, "Trae CN", "extensions"),
     path.join(home, ".vscode", "extensions"),
     path.join(home, ".cursor", "extensions"),
     path.join(home, ".codex", "extensions"),

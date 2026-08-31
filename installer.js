@@ -22,9 +22,11 @@ function ideDirs() {
   const appData = process.env.APPDATA || path.join(home, "AppData", "Roaming");
   const dirs = [
     // Trae（国际版 / 中文版通用候选）
+    path.join(home, ".trae-cn", "extensions"),
     path.join(home, ".trae", "extensions"),
     path.join(appData, "Trae", "extensions"),
     path.join(appData, "TraeCN", "extensions"),
+    path.join(appData, "Trae CN", "extensions"),
     // VSCode 系
     path.join(home, ".vscode", "extensions"),
     path.join(home, ".cursor", "extensions"),
