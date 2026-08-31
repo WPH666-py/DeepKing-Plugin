@@ -1,0 +1,26 @@
+<idea-plugin>
+  <id>com.wp666.deepking.plugin</id>
+  <name>DeepKing · AI 助手</name>
+  <vendor email="wp666@users.noreply.github.com">wp666</vendor>
+
+  <description><![CDATA[
+    <p>将 <b>DeepKing</b> 的多模态 Agentic IDE AI 助手带入 JetBrains 全家桶（PyCharm / WebStorm / IntelliJ）。
+    右侧边栏打开 AI 助手：DeepSeek 对话 + 多模式 Persona（DSH/DSK/DSQ/DSG）+ 工具 Agent Loop
+    （read/write/edit/bash/grep/glob/todo…），工作目录 = 当前项目。
+    <p>依赖：本机需安装 <b>Node.js ≥ 18</b>（仅插件运行时使用；插件自带 shared/core）。
+    <p>左侧图标：DeepKing。</p>
+  ]]></description>
+
+  <change-notes><![CDATA[
+    <ul>
+      <li>0.1.0 — 初版：右侧 DeepKing 面板（JCEF 复用共享 Web UI + Node 宿主）。</li>
+    </ul>
+  ]]></change-notes>
+
+  <idea-version since-build="232"/>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <toolWindow id="DeepKing" anchor="right" icon="/icons/deepking.svg"
+                factoryClass="deepking.plugin.DeepKingToolWindowFactory"/>
+  </extensions>
+</idea-plugin>

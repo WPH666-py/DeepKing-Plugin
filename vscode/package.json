@@ -1,0 +1,34 @@
+{
+  "name": "deepking-plugin",
+  "displayName": "DeepKing · AI 助手",
+  "description": "将 DeepKing 的多模态 Agentic IDE AI 助手（DeepSeek 对话 + 16 工具 Agent Loop + 多模式 Persona）以侧边栏形式带入 VSCode / Trae / CodeX。图标 DeepKing。",
+  "version": "0.1.0",
+  "publisher": "wp666",
+  "license": "MIT",
+  "icon": "media/deepking.png",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["AI", "Other"],
+  "keywords": ["deepking", "deepseek", "ai", "agent", "coding"],
+  "main": "./extension.js",
+  "activationEvents": ["onView:deepking.chatView", "onCommand:deepking.openChat", "onCommand:deepking.configure"],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "deepking",
+          "title": "DeepKing AI",
+          "icon": "media/activitybar.svg"
+        }
+      ]
+    },
+    "views": {
+      "deepking": [
+        { "type": "webview", "id": "deepking.chatView", "name": "AI 助手", "icon": "media/activitybar.svg" }
+      ]
+    },
+    "commands": [
+      { "command": "deepking.openChat", "title": "DeepKing：打开 AI 助手", "icon": "media/activitybar.svg" },
+      { "command": "deepking.configure", "title": "DeepKing：配置 AI" }
+    ]
+  }
+}

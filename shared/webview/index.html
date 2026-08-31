@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DeepKing AI 助手</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header class="dk-header">
+      <div class="dk-title">
+        <img src="deepking.png" class="dk-logo" alt="DK" onerror="this.style.display='none'">
+        <span>DeepKing · AI 助手</span>
+      </div>
+      <div class="dk-header-actions">
+        <select id="mode" title="模式"></select>
+        <button id="btnSettings" title="设置 (API Key / Base URL / 模型)">⚙</button>
+        <button id="btnClear" title="清空对话">🗑</button>
+      </div>
+    </header>
+
+    <div id="messages" class="dk-messages">
+      <div class="dk-empty" id="emptyTip">
+        <div class="dk-empty-icon">🐳</div>
+        <div>输入问题开始对话。<br>工作目录：<b id="workdirLabel">-</b></div>
+      </div>
+    </div>
+
+    <footer class="dk-input-area">
+      <div class="dk-progress" id="progress" style="display:none"></div>
+      <textarea id="input" rows="3" placeholder="输入您的问题…（Enter 发送，Shift+Enter 换行）"></textarea>
+      <div class="dk-input-row">
+        <span class="dk-hint" id="ctxHint"></span>
+        <button id="btnSend" class="dk-send" disabled>发送</button>
+      </div>
+    </footer>
+  </div>
+
+  <div id="settingsOverlay" class="dk-overlay" style="display:none">
+    <div class="dk-settings">
+      <h3>DeepSeek 配置</h3>
+      <label>API Key<input id="setKey" type="password" placeholder="sk-..."></label>
+      <label>Base URL<input id="setBase" placeholder="https://api.deepseek.com"></label>
+      <label>模型<input id="setModel" placeholder="deepseek-chat"></label>
+      <label>工作目录<input id="setWorkdir" placeholder="留空 = 当前工程/当前目录"></label>
+      <div class="dk-settings-actions">
+        <button id="btnSave">保存</button>
+        <button id="btnCancel" class="secondary">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="chat.js"></script>
+</body>
+</html>
