@@ -364,8 +364,8 @@ async function deepseekChat(config, system, messages, tools, dbg) {
   const dbgDir = dbg && dbg.workdir ? path.join(dbg.workdir, ".deepking-debug") : null;
   const dbgWrite = (name, data) => { if (!dbgDir) return; try { fs.mkdirSync(dbgDir, { recursive: true }); fs.writeFileSync(path.join(dbgDir, name), JSON.stringify(data, null, 2), "utf8"); } catch (_) {} };
   try {
+    if (dbgDir) dbgWrite(`req-${Date.now()}.json`, { url, model: body.model, tools: body.tools ? body.tools.length : 0, messages: body.messages.map((m) => ({ role: m.role, content: (m.content || "").slice(0, 200), tool_calls: m.tool_calls ? m.tool_calls.length : 0 })) });
     const resp = await fetch(url, { method: "POST", headers: { "Authorization": `Bearer ${config.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
-    if (dbgDir) dbgWrite(`req-${Date.now()}.json`, { url, model: body.model, messages: body.messages, tools: body.tools ? body.tools.length : 0 });
     const respText = await resp.text().catch(() => "");
     if (dbgDir) dbgWrite(`resp-${Date.now()}.json`, { status: resp.status, body: respText.slice(0, 200000) });
     if (!resp.ok) return { ok: false, error: `API error (${resp.status}): ${respText.slice(0, 400)}${dbgDir ? `（详见 ${dbgDir}）` : ""}` };

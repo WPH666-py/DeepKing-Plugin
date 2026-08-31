@@ -133,7 +133,7 @@
   }
   /* 看门狗：运行中超 60s 无事件 → 提示可能卡住（非阻塞，完成自动停） */
   let watchdogTimer = null, lastEventAt = 0;
-  function armWatchdog() { lastEventAt = Date.now(); clearInterval(watchdogTimer); watchdogTimer = setInterval(() => { if (state.running && Date.now() - lastEventAt > 60000) showBanner("⏳ 已 60 秒无响应，可能卡住（API/网络）。仍在处理中，完成或超时（5 分钟）后自动结束。"); }, 5000); }
+  function armWatchdog() { lastEventAt = Date.now(); clearInterval(watchdogTimer); watchdogTimer = setInterval(() => { if (state.running && Date.now() - lastEventAt > 150000) showBanner("⏳ 已 150 秒无响应。V4 思考模式推理可能长达数分钟，请稍候；若超过 5 分钟仍无输出会自动报错（API 超时兜底）。"); }, 5000); }
   function disarmWatchdog() { clearInterval(watchdogTimer); watchdogTimer = null; }
   function updateSettingsUI() {
     const fill = (id, v) => { const n = document.getElementById(id); if (n) n.value = v == null ? "" : v; };
