@@ -23,7 +23,7 @@ Rules:
 - Use bash for any build/test/run. Prefer small, runnable iterations; verify after each step.
 - Before editing an existing file, call read on it first (exact content for old_string).
 - If a tool call fails twice, switch approach and explain why.
-- When done, output a concise summary with file paths. Max iterations: 25.`,
+- When done, output a concise summary with file paths. No iteration limit: keep working until the task is fully complete.`,
   },
   dsk: {
     label: "DSK (K3)",
@@ -33,7 +33,7 @@ Rules:
 - Prefer minimal runnable iterations; verify after each step.
 - Read before edit; exact old_string matching.
 - Every 5 iterations review the original goal and stop if it is complete.
-- Output a concise summary when done. Max iterations: 15.`,
+- Output a concise summary when done. No iteration limit: keep working until the task is fully complete.`,
   },
   dsq: {
     label: "DSQ (Qwen3.8)",
@@ -42,7 +42,7 @@ Rules:
 - For any non-trivial task FIRST call todo_write to break it into subtasks; mark in_progress/completed.
 - Mirror the existing project style: read similar files first, then write consistent code.
 - Prefer complete runnable code over partial snippets. Chinese answers are welcome.
-- Read before edit. Max iterations: 18.`,
+- Read before edit. No iteration limit: keep working until the task is fully complete.`,
   },
   dsg: {
     label: "DSG (GLM5.3)",
@@ -52,7 +52,7 @@ Rules:
 - Check usages with grep before editing shared functions.
 - Be concise: show code first, reasoning only when asked.
 - Read before edit; handle edge cases explicitly.
-- Max iterations: 20.`,
+- No iteration limit: keep working until the task is fully complete.`,
   },
 };
 
@@ -497,16 +497,16 @@ function applyUndo(entries) {
 async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent, vision, onUndo, runId) {
   const persona = MODES[mode] || MODES.dsh;
   const useTools = config.tools !== false && config.max !== false;
-  const maxIter = 60; // 与循环内压缩配合：项目级任务一次最多 60 轮，上下文超阈值会自动摘要压缩
+  const maxIter = 0; // 0 = 不设步数上限：循环只会在模型给出结论（不再调用工具）或出错时结束；上下文超阈值自动摘要压缩
   const com = compressHistory(history.filter((m) => m.role !== "system"));
   let messages = com.history.map((m) => ({ role: m.role, content: m.content, reasoning_content: m.reasoning_content, tool_calls: m.tool_calls, tool_call_id: m.tool_call_id, name: m.name })).filter((m) => m.role !== "system");
   messages.push({ role: "user", content: userMessage });
   let finalContent = "", finalReasoning = "", toolCount = 0;
-  onEvent({ type: "started", max_iterations: maxIter, use_tools: useTools, run_id: runId });
+  onEvent({ type: "started", max_iterations: maxIter || null, use_tools: useTools, run_id: runId });
   if (com.compressed) onEvent({ type: "context_compressed", before_tokens: com.before, after_tokens: com.after });
   const schemas = useTools ? TOOL_SCHEMAS : null;
-  for (let iter = 0; iter < maxIter; iter++) {
-    onEvent({ type: "iteration", current: iter + 1, max: maxIter });
+  for (let iter = 0; maxIter === 0 || iter < maxIter; iter++) {
+    onEvent({ type: "iteration", current: iter + 1, max: maxIter || null });
     const resp = await deepseekChat(config, persona.system, messages, schemas, { workdir, runId });
     if (!resp.ok) { onEvent({ type: "error", message: resp.error }); return; }
     const choice = resp.data.choices && resp.data.choices[0];

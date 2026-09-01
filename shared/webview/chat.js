@@ -204,11 +204,11 @@
       if (!k || !k.type || !AGENT_EVENT_TYPES.includes(k.type)) return;
       lastEventAt = Date.now();
       if (k.type === "started") {
-        state.progress = `0/${k.max_iterations} 步`;
+        state.progress = `0/${k.max_iterations || "∞"} 步`;
         state.currentRunId = k.run_id || null;
         armWatchdog();
       }
-      else if (k.type === "iteration") { state.progress = `${k.current}/${k.max} 步`; }
+      else if (k.type === "iteration") { state.progress = `${k.current}/${k.max || "∞"} 步`; }
       else if (k.type === "tool_call_requested") { state.toolCalls.push({ id: k.id, name: k.name, arguments: k.arguments, status: "running", output: "" }); }
       else if (k.type === "tool_call_executed") { const tc = state.toolCalls.find((t) => t.id === k.id); if (tc) { tc.success = k.success; tc.output = k.output; tc.status = k.success ? "done" : "error"; } }
       else if (k.type === "assistant_text") { state.assistant = (state.assistant || "") + k.content; }
