@@ -444,21 +444,23 @@ function parseDSMLToolCalls(text) {
   const out = [];
   if (!text) return out;
   text = String(text).split(DSML_PREFIX).join("");
-  if (!/<tool_calls>/.test(text)) return out;
-  const blocks = text.match(/<tool_calls>[\s\S]*?<\/tool_calls>/g) || [];
+  /* 真实 DSML 格式为 <｜DSML｜tag>（竖线+DSML 关键字+标签名），去掉竖线后是 <DSMLtag>；
+   * 所有标签正则都必须容忍可选 DSML 关键字，否则解析永远落空 */
+  if (!/<(?:DSML)?tool_calls>/.test(text)) return out;
+  const blocks = text.match(/<(?:DSML)?tool_calls>[\s\S]*?<\/(?:DSML)?tool_calls>/g) || [];
   for (const block of blocks) {
-    const invokes = block.match(/<invoke\s+name="([^"]+)"[^>]*>[\s\S]*?<\/invoke>/g) || [];
+    const invokes = block.match(/<(?:DSML)?invoke\s+name="([^"]+)"[^>]*>[\s\S]*?<\/(?:DSML)?invoke>/g) || [];
     for (const inv of invokes) {
-      const name = (inv.match(/<invoke\s+name="([^"]+)"/) || [])[1] || "";
+      const name = (inv.match(/<(?:DSML)?invoke\s+name="([^"]+)"/) || [])[1] || "";
       if (!name) continue;
       const args = {};
-      const params = inv.match(/<parameter\s+([^>]*)>([\s\S]*?)<\/parameter>/g) || [];
+      const params = inv.match(/<(?:DSML)?parameter\s+([^>]*)>([\s\S]*?)<\/(?:DSML)?parameter>/g) || [];
       for (const p of params) {
-        const head = (p.match(/<parameter\s+([^>]*)>/) || [])[1] || "";
+        const head = (p.match(/<(?:DSML)?parameter\s+([^>]*)>/) || [])[1] || "";
         const pname = (head.match(/name="([^"]+)"/) || [])[1] || "";
         if (!pname) continue;
         const isStr = /string="true"/.test(head);
-        let val = (p.match(/>([\s\S]*?)<\/parameter>/) || [])[1] || "";
+        let val = (p.match(/>([\s\S]*?)<\/(?:DSML)?parameter>/) || [])[1] || "";
         if (!isStr) { try { val = JSON.parse(val); } catch (_) {} } else { val = String(val); }
         args[pname] = val;
       }
@@ -495,7 +497,7 @@ function applyUndo(entries) {
 async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent, vision, onUndo, runId) {
   const persona = MODES[mode] || MODES.dsh;
   const useTools = config.tools !== false && config.max !== false;
-  const maxIter = 40; // 与循环内压缩配合：项目级分析一次最多 40 轮，上下文超阈值会自动摘要压缩
+  const maxIter = 60; // 与循环内压缩配合：项目级任务一次最多 60 轮，上下文超阈值会自动摘要压缩
   const com = compressHistory(history.filter((m) => m.role !== "system"));
   let messages = com.history.map((m) => ({ role: m.role, content: m.content, reasoning_content: m.reasoning_content, tool_calls: m.tool_calls, tool_call_id: m.tool_call_id, name: m.name })).filter((m) => m.role !== "system");
   messages.push({ role: "user", content: userMessage });
@@ -517,8 +519,10 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
     /* DeepSeek 推理模型有时把工具调用以 DSML 文本写在 content（而非结构化字段）：
      * 解析成可执行调用，避免把 DSML 原文当作结论展示 */
     let dsmlParsed = false;
-    if (!calls.length && hasDSMLToolCalls(rawText)) {
-      const dsml = parseDSMLToolCalls(rawText);
+    /* DSML 工具调用可能被模型写进 content 或 reasoning_content（思考模式行为不一致），两处都解析 */
+    const dsmlSource = rawText + String(msg.reasoning_content || "");
+    if (!calls.length && hasDSMLToolCalls(dsmlSource)) {
+      const dsml = parseDSMLToolCalls(dsmlSource);
       if (dsml.length) { calls = dsml; dsmlParsed = true; }
     }
     finalContent = dsmlParsed ? "" : rawText;
@@ -569,8 +573,9 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
       const sm = sum.data.choices && sum.data.choices[0] ? (sum.data.choices[0].message || {}) : {};
       if (sm.reasoning_content !== undefined) finalReasoning = String(sm.reasoning_content);
       sumText = String(sm.content || "");
-      if ((sm.tool_calls || []).length || !hasDSMLToolCalls(sumText)) break;
-      const dsml = parseDSMLToolCalls(sumText);
+      const smDsml = sumText + String(sm.reasoning_content || "");
+      if ((sm.tool_calls || []).length || !hasDSMLToolCalls(smDsml)) break;
+      const dsml = parseDSMLToolCalls(smDsml);
       if (!dsml.length) break;
       messages.push({ role: "assistant", content: null, reasoning_content: sm.reasoning_content !== undefined ? String(sm.reasoning_content) : undefined, tool_calls: dsml.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: typeof c.arguments === "string" ? c.arguments : JSON.stringify(c.arguments) } })) });
       for (const raw of dsml) {
