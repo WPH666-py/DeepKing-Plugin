@@ -1,0 +1,108 @@
+:root {
+  --bg: #ffffff; --bg2: #f5f7fa; --bd: #e2e6ee; --tx: #1c2433; --tx2: #67758e;
+  --ac: #3d6fd8; --acT: #ffffff; --user: #dce8fb; --ai: #f7f9fc; --sys: #fff6df; --sysT: #8a6414;
+  --code: #f0f2f7; --err: #b3402e;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161c; --bg2: #1a1e26; --bd: #2b3140; --tx: #e6e9f2; --tx2: #8f9bb3;
+    --ac: #5a8fe0; --acT: #ffffff; --user: #22344f; --ai: #1a1f2a; --sys: #2f2a1a; --sysT: #e8d9a0;
+    --code: #10131a; --err: #d0705e;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--tx); font: 13px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+#app { display: flex; flex-direction: column; height: 100vh; }
+.dk-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--bd); background: var(--bg2); }
+.dk-title { display: flex; align-items: center; gap: 6px; font-weight: 700; font-size: 12.5px; }
+.dk-logo { width: 18px; height: 18px; border-radius: 4px; }
+.dk-header-actions { display: flex; gap: 6px; }
+.dk-header-actions select, .dk-header-actions button {
+  background: var(--bg); color: var(--tx2); border: 1px solid var(--bd); border-radius: 6px; font-size: 11.5px; padding: 3px 8px; cursor: pointer;
+}
+.dk-header-actions button:hover, .dk-header-actions select:hover { color: var(--ac); border-color: var(--ac); }
+.dk-messages { flex: 1; overflow: auto; padding: 10px; }
+.dk-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--tx2); text-align: center; font-size: 12px; }
+.dk-empty-icon { font-size: 44px; opacity: .7; }
+.dk-msg { margin: 0 0 10px; max-width: 100%; }
+.dk-msg .dk-role { font-size: 10.5px; color: var(--tx2); margin: 0 0 2px 2px; }
+.dk-msg .dk-content { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--bd); }
+.dk-msg.user .dk-content { background: var(--user); }
+.dk-msg.assistant .dk-content { background: var(--ai); }
+.dk-msg.system .dk-content { background: var(--sys); color: var(--sysT); font-size: 12px; }
+.dk-content p { margin: 4px 0; }
+.dk-content h1, .dk-content h2, .dk-content h3, .dk-content h4 { font-size: 14px; margin: 8px 0 4px; }
+.dk-content code { background: var(--code); border-radius: 3px; padding: 1px 4px; font-size: 11.5px; font-family: Consolas, "Cascadia Code", monospace; }
+.dk-content pre { background: var(--code); border: 1px solid var(--bd); border-radius: 6px; padding: 8px; overflow: auto; }
+.dk-content pre code { background: none; padding: 0; }
+.dk-content a { color: var(--ac); }
+.dk-content blockquote { margin: 4px 0; padding: 2px 10px; border-left: 3px solid var(--ac); }
+.dk-content li { margin-left: 18px; }
+.dk-tools { margin: 0 0 10px 18px; border-left: 2px solid var(--bd); padding-left: 8px; }
+.dk-tools-title { font-size: 11px; color: var(--tx2); margin-bottom: 4px; }
+.dk-tool { border: 1px solid var(--bd); border-radius: 6px; margin: 4px 0; background: var(--bg2); }
+.dk-tool summary { cursor: pointer; padding: 4px 8px; font-size: 11.5px; }
+.dk-tool.ok summary { color: #2e8b57; }
+.dk-tool.err summary { color: var(--err); }
+.dk-tool.wait summary { color: var(--tx2); }
+.dk-tool-body { padding: 0 8px 8px; }
+.dk-tool-label { font-size: 10px; color: var(--tx2); margin: 4px 0 2px; }
+.dk-tool-pre { background: var(--code); border-radius: 4px; padding: 6px; margin: 0; overflow: auto; font-size: 11px; font-family: Consolas, monospace; max-height: 180px; }
+.dk-input-area { border-top: 1px solid var(--bd); background: var(--bg2); padding: 8px 10px; }
+.dk-progress { font-size: 11.5px; color: var(--ac); padding: 0 2px 6px; }
+.dk-progress.dk-done { color: #2e8b57; font-weight: 700; }
+.dk-progress.dk-error { color: var(--err); font-weight: 700; }
+.dk-withdraw {
+  display: inline-block; margin: 4px 0 0 2px; font-size: 10.5px; color: var(--tx2);
+  background: transparent; border: 1px solid var(--bd); border-radius: 5px;
+  padding: 2px 8px; cursor: pointer; opacity: 0; transition: opacity .15s;
+}
+.dk-msg.user:hover .dk-withdraw { opacity: 1; }
+.dk-withdraw:hover { color: var(--err); border-color: var(--err); }
+.dk-input-area textarea {
+  width: 100%; resize: vertical; min-height: 56px; max-height: 220px; background: var(--bg); color: var(--tx);
+  border: 1px solid var(--bd); border-radius: 8px; padding: 8px; font: inherit; outline: none;
+}
+.dk-input-area textarea:focus { border-color: var(--ac); }
+.dk-input-row { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
+.dk-hint { font-size: 10.5px; color: var(--tx2); }
+.dk-send { background: var(--ac); color: var(--acT); border: none; border-radius: 7px; padding: 6px 18px; font-size: 12.5px; cursor: pointer; }
+.dk-send:disabled { opacity: .45; cursor: default; }
+.dk-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.4); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.dk-banner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 99; padding: 6px 10px;
+  background: #7a1d12; color: #ffd9d0; font-size: 12px; line-height: 1.5;
+  white-space: pre-wrap;
+}
+.dk-settings { background: var(--bg); border: 1px solid var(--bd); border-radius: 10px; padding: 16px; width: min(320px, 90%); }
+.dk-settings h3 { margin: 0 0 10px; font-size: 14px; }
+.dk-settings label { display: block; font-size: 11.5px; color: var(--tx2); margin: 8px 0 2px; }
+.dk-settings input { width: 100%; background: var(--bg2); color: var(--tx); border: 1px solid var(--bd); border-radius: 6px; padding: 5px 8px; font: inherit; }
+.dk-settings-actions { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
+.dk-settings-actions button { background: var(--ac); color: var(--acT); border: none; border-radius: 6px; padding: 5px 14px; cursor: pointer; }
+.dk-settings-actions button.secondary { background: transparent; color: var(--tx2); border: 1px solid var(--bd); }
+.dk-settings-bar {
+  border-bottom: 1px solid var(--bd); background: var(--bg2); padding: 6px 10px;
+}
+.dk-settings-bar summary { cursor: pointer; font-size: 11.5px; font-weight: 700; color: var(--tx2); outline: none; }
+.dk-settings-bar label { display: block; font-size: 11px; color: var(--tx2); margin: 6px 0 2px; }
+.dk-settings-bar input {
+  width: 100%; background: var(--bg); color: var(--tx); border: 1px solid var(--bd);
+  border-radius: 6px; padding: 4px 7px; font: inherit; outline: none;
+}
+.dk-settings-bar input:focus { border-color: var(--ac); }
+.dk-settings-bar select {
+  width: 100%; background: var(--bg); color: var(--tx); border: 1px solid var(--bd);
+  border-radius: 6px; padding: 4px 7px; font: inherit; outline: none;
+}
+.dk-switches { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0 2px; }
+.dk-switch { display: inline-flex !important; align-items: center; gap: 4px; margin: 0 !important; font-size: 11px !important; cursor: pointer; }
+.dk-switch input { width: auto !important; }
+.dk-vision-head { margin: 10px 0 2px; font-size: 11.5px; font-weight: 700; color: var(--tx2); border-top: 1px dashed var(--bd); padding-top: 8px; }
+.dk-paste-chip {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 6px; padding: 4px 6px;
+  background: var(--bg2); border: 1px solid var(--bd); border-radius: 8px; max-width: 100%;
+}
+.dk-paste-chip img { width: 32px; height: 32px; object-fit: cover; border-radius: 4px; }
+.dk-paste-chip span { flex: 1; font-size: 11px; color: var(--tx2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dk-paste-chip button { border: none; background: transparent; color: var(--tx2); cursor: pointer; font-size: 14px; }
