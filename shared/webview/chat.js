@@ -215,7 +215,8 @@
       else if (k.type === "done") {
         disarmWatchdog();
         const content = state.assistant || k.content || "";
-        state.messages.push({ role: "assistant", content });
+        /* thinking 模式要求 reasoning_content 回传：存入消息，下次发送时随 history 带回 API */
+        state.messages.push({ role: "assistant", content, reasoning_content: k.reasoning_content || undefined });
         state.assistant = ""; state.toolCalls = []; state.progress = "";
         // 记录本次运行（撤回用）：绑定到当前用户消息
         if (state.currentRunId && state.pendingRunUser) state.runIds[state.pendingRunUser] = state.currentRunId;

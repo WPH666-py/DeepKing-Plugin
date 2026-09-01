@@ -379,7 +379,7 @@ async function deepseekChat(config, system, messages, tools, dbg) {
   const dbgDir = dbg && dbg.workdir ? path.join(dbg.workdir, ".deepking-debug") : null;
   const dbgWrite = (name, data) => { if (!dbgDir) return; try { fs.mkdirSync(dbgDir, { recursive: true }); fs.writeFileSync(path.join(dbgDir, name), JSON.stringify(data, null, 2), "utf8"); } catch (_) {} };
   try {
-    if (dbgDir) dbgWrite(`req-${Date.now()}.json`, { url, model: body.model, tools: body.tools ? body.tools.length : 0, messages: body.messages.map((m) => ({ role: m.role, content: (m.content || "").slice(0, 200), tool_calls: m.tool_calls ? m.tool_calls.length : 0 })) });
+    if (dbgDir) dbgWrite(`req-${Date.now()}.json`, { url, model: body.model, tools: body.tools ? body.tools.length : 0, messages: body.messages.map((m) => ({ role: m.role, content: (m.content || "").slice(0, 200), reasoning_content: m.reasoning_content !== undefined ? String(m.reasoning_content).slice(0, 80) : undefined, tool_calls: m.tool_calls ? m.tool_calls.length : 0 })) });
     const resp = await fetch(url, { method: "POST", headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
     const respText = await resp.text().catch(() => "");
     if (dbgDir) dbgWrite(`resp-${Date.now()}.json`, { status: resp.status, body: respText.slice(0, 200000) });
@@ -497,9 +497,9 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
   const useTools = config.tools !== false && config.max !== false;
   const maxIter = 40; // 与循环内压缩配合：项目级分析一次最多 40 轮，上下文超阈值会自动摘要压缩
   const com = compressHistory(history.filter((m) => m.role !== "system"));
-  let messages = com.history.map((m) => ({ role: m.role, content: m.content, tool_calls: m.tool_calls, tool_call_id: m.tool_call_id, name: m.name })).filter((m) => m.role !== "system");
+  let messages = com.history.map((m) => ({ role: m.role, content: m.content, reasoning_content: m.reasoning_content, tool_calls: m.tool_calls, tool_call_id: m.tool_call_id, name: m.name })).filter((m) => m.role !== "system");
   messages.push({ role: "user", content: userMessage });
-  let finalContent = "", toolCount = 0;
+  let finalContent = "", finalReasoning = "", toolCount = 0;
   onEvent({ type: "started", max_iterations: maxIter, use_tools: useTools, run_id: runId });
   if (com.compressed) onEvent({ type: "context_compressed", before_tokens: com.before, after_tokens: com.after });
   const schemas = useTools ? TOOL_SCHEMAS : null;
@@ -510,6 +510,8 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
     const choice = resp.data.choices && resp.data.choices[0];
     if (!choice) { onEvent({ type: "error", message: "无有效响应" }); return; }
     const msg = choice.message || {};
+    /* thinking 模式（deepseek-v4-pro 等）要求：assistant 消息的 reasoning_content 必须回传，否则 400 */
+    if (msg.reasoning_content !== undefined) finalReasoning = String(msg.reasoning_content);
     let calls = msg.tool_calls || [];
     const rawText = String(msg.content || "");
     /* DeepSeek 推理模型有时把工具调用以 DSML 文本写在 content（而非结构化字段）：
@@ -526,8 +528,8 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
       const j = (v) => (typeof v === "string" ? v : JSON.stringify(v || {}));
       return { id: c.id, type: "function", function: { name, arguments: c.function ? j(c.function.arguments) : j(c.arguments) } };
     });
-    messages.push({ role: "assistant", content: apiCalls.length ? null : (rawText || null), tool_calls: apiCalls.length ? apiCalls : undefined });
-    if (!calls.length) { onEvent({ type: "done", content: finalContent, total_iterations: iter + 1, total_tool_calls: toolCount }); return; }
+    messages.push({ role: "assistant", content: apiCalls.length ? null : (rawText || null), reasoning_content: msg.reasoning_content !== undefined ? String(msg.reasoning_content) : undefined, tool_calls: apiCalls.length ? apiCalls : undefined });
+    if (!calls.length) { onEvent({ type: "done", content: finalContent, reasoning_content: finalReasoning || undefined, total_iterations: iter + 1, total_tool_calls: toolCount }); return; }
     for (const raw of calls) {
       toolCount++;
       const call = raw.function ? normalizeCall(raw) : raw;
@@ -565,11 +567,12 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
       const sum = await deepseekChat(config, persona.system, messages, null, { workdir, runId });
       if (!sum.ok) { onEvent({ type: "error", message: sum.error }); return; }
       const sm = sum.data.choices && sum.data.choices[0] ? (sum.data.choices[0].message || {}) : {};
+      if (sm.reasoning_content !== undefined) finalReasoning = String(sm.reasoning_content);
       sumText = String(sm.content || "");
       if ((sm.tool_calls || []).length || !hasDSMLToolCalls(sumText)) break;
       const dsml = parseDSMLToolCalls(sumText);
       if (!dsml.length) break;
-      messages.push({ role: "assistant", content: null, tool_calls: dsml.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: typeof c.arguments === "string" ? c.arguments : JSON.stringify(c.arguments) } })) });
+      messages.push({ role: "assistant", content: null, reasoning_content: sm.reasoning_content !== undefined ? String(sm.reasoning_content) : undefined, tool_calls: dsml.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: typeof c.arguments === "string" ? c.arguments : JSON.stringify(c.arguments) } })) });
       for (const raw of dsml) {
         toolCount++;
         const call = raw.function ? normalizeCall(raw) : raw;
@@ -588,7 +591,7 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
     finalContent = sumText;
     if (finalContent && !/<tool_calls>/.test(finalContent)) onEvent({ type: "assistant_text", content: finalContent });
   }
-  onEvent({ type: "done", content: finalContent, total_iterations: maxIter, total_tool_calls: toolCount });
+  onEvent({ type: "done", content: finalContent, reasoning_content: finalReasoning || undefined, total_iterations: maxIter, total_tool_calls: toolCount });
 }
 
 /* ───────── 多模态流程：识图 → 结合问题发送 ───────── */
