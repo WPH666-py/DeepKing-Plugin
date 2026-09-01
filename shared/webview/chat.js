@@ -21,6 +21,8 @@
 
   const $ = (s) => { try { return document.querySelector(s); } catch (_) { return null; } };
   const val = (id) => { const n = document.getElementById(id); return n ? n.value : ""; };
+  /* API Key 必须是纯 ASCII 无空白字符串；粘贴时易混入全角空格/换行/中文，保存前自动清洗 */
+  const cleanKey = (raw) => String(raw || "").replace(/\s+/g, "").replace(/[^\x21-\x7E]/g, "");
 
   const MODES = [
     { id: "dsh", label: "DSH (Harness)" }, { id: "dsk", label: "DSK (K3)" },
@@ -169,7 +171,10 @@
     updateModeHint();
   }
   function saveSettingsFromUI() {
-    state.settings.apiKey = val("setKey").trim();
+    const rawKey = val("setKey").trim();
+    const apiKey = cleanKey(rawKey);
+    const keyWarn = apiKey !== rawKey ? "API Key 已自动清理空白/非 ASCII 字符；若仍报错，请清空后重新粘贴 sk- 开头的密钥" : null;
+    state.settings.apiKey = apiKey;
     state.settings.baseUrl = val("setBase").trim() || "https://api.deepseek.com";
     state.settings.model = val("setModel").trim() || "deepseek-chat";
     state.settings.workdir = val("setWorkdir").trim();
@@ -177,16 +182,18 @@
     state.settings.tools = chkV("swTools");
     state.settings.max = chkV("swMax");
     state.settings.multimodal = chkV("swMM");
+    const rawVKey = val("visionKey").trim();
     state.settings.vision = {
       provider: val("visionProvider").trim() || "modlens",
-      apiKey: val("visionKey").trim(),
+      apiKey: cleanKey(rawVKey),
       baseUrl: val("visionBase").trim() || "https://api.openai.com/v1",
       model: val("visionModel").trim() || "gpt-4o-mini",
     };
     persist(state);
     if (vscode) { try { vscode.postMessage({ type: "saveConfig", config: state.settings }); } catch (_) {} }
     updateModeHint();
-    if (!state.running) finishStatus("✅ 配置已保存", false);
+    if (keyWarn) finishStatus("⚠️ " + keyWarn, true);
+    else if (!state.running) finishStatus("✅ 配置已保存", false);
     const wl = $("#workdirLabel"); if (wl) wl.textContent = state.settings.workdir || "(工作目录见设置)";
   }
 
@@ -241,7 +248,11 @@
       if (m && m.type === "ev") onAgentEvent(m.ev);
       else if (m && m.type === "config") {
         // 宿主配置（globalState 的真正来源）合并进本地状态并刷新 UI
-        if (m.config) { state.settings = { ...state.settings, ...(m.config || {}) }; persist(state); }
+        if (m.config) {
+          const k = String(m.config.apiKey || "");
+          if (/[\s\u0080-\uFFFF]/.test(k) || /[^\x21-\x7E]/.test(k)) showBanner("⚠️ 检测到保存的 API Key 内容异常（含空白或非 ASCII 字符，可能粘错了内容）。请清空后重新粘贴正确的 sk- 密钥。");
+          state.settings = { ...state.settings, ...(m.config || {}) }; persist(state);
+        }
         updateSettingsUI(); updateModeHint();
         const p = $("#progress");
         if (p && !state.running) { finishStatus("✅ 配置已加载", false); }

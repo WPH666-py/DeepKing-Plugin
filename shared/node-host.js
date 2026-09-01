@@ -112,6 +112,10 @@ function tool(name, description, parameters) { return { type: "function", functi
 /* ───────── 工具执行 ───────── */
 function resolvePath(workdir, p) { return path.isAbsolute(p) ? p : path.join(workdir, p); }
 function truncate(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n) + `... [truncated, ${s.length} total chars]` : s; }
+/* API Key 必然是纯 ASCII 无空白字符串；粘贴时常混入全角/不换行空格、换行或中文，先清洗再使用 */
+function cleanApiKey(k) {
+  return String(k || "").replace(/\s+/g, "").replace(/[^\x21-\x7E]/g, "");
+}
 
 function execTool(workdir, name, args, ctx) {
   try {
@@ -315,6 +319,8 @@ const VISION_DEFAULT_PROMPT = {
 function guessMime(p) { const e = path.extname(p).toLowerCase(); return { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp" }[e] || "image/png"; }
 async function analyzeImage(vision, imagePath, prompt) {
   if (!vision || !vision.apiKey) throw new Error("Vision API Key not configured.");
+  const vKey = cleanApiKey(vision.apiKey);
+  if (!vKey) throw new Error("Vision API Key 无效（为空或仅含空白/非 ASCII 字符），请在设置中重新粘贴。");
   const b64 = fs.readFileSync(imagePath).toString("base64");
   const dataUrl = `data:${guessMime(imagePath)};base64,${b64}`;
   const provider = vision.provider === "deepseek-ocr" ? "deepseek-ocr" : "modlens";
@@ -335,7 +341,7 @@ async function analyzeImage(vision, imagePath, prompt) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 180000);
   try {
-    const resp = await fetch(url, { method: "POST", headers: { "Authorization": `Bearer ${vision.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
+    const resp = await fetch(url, { method: "POST", headers: { "Authorization": `Bearer ${vKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
     if (!resp.ok) throw new Error(`Vision API error (${resp.status}): ${(await resp.text().catch(() => "")).slice(0, 300)}`);
     const json = await resp.json();
     const text = ((json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content) || "").trim();
@@ -361,6 +367,8 @@ function normalizeCall(call) {
   return { id: call.id, name: call.function.name, arguments: args };
 }
 async function deepseekChat(config, system, messages, tools, dbg) {
+  const apiKey = cleanApiKey(config.apiKey);
+  if (!apiKey) return { ok: false, error: "API Key 无效：为空或仅含空白/非 ASCII 字符（可能粘贴了错误内容）。请在设置中清空后，重新粘贴 sk- 开头的 DeepSeek API Key。" };
   const body = { model: config.model || "deepseek-chat", messages: [{ role: "system", content: system }, ...messages], stream: false, max_tokens: 16384, temperature: 0.7 };
   // 对齐官方 Tool Calls 指南：不传 tool_choice（默认即 auto），tools 仅在有工具时携带
   if (tools && tools.length) body.tools = tools;
@@ -372,7 +380,7 @@ async function deepseekChat(config, system, messages, tools, dbg) {
   const dbgWrite = (name, data) => { if (!dbgDir) return; try { fs.mkdirSync(dbgDir, { recursive: true }); fs.writeFileSync(path.join(dbgDir, name), JSON.stringify(data, null, 2), "utf8"); } catch (_) {} };
   try {
     if (dbgDir) dbgWrite(`req-${Date.now()}.json`, { url, model: body.model, tools: body.tools ? body.tools.length : 0, messages: body.messages.map((m) => ({ role: m.role, content: (m.content || "").slice(0, 200), tool_calls: m.tool_calls ? m.tool_calls.length : 0 })) });
-    const resp = await fetch(url, { method: "POST", headers: { "Authorization": `Bearer ${config.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
+    const resp = await fetch(url, { method: "POST", headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
     const respText = await resp.text().catch(() => "");
     if (dbgDir) dbgWrite(`resp-${Date.now()}.json`, { status: resp.status, body: respText.slice(0, 200000) });
     if (!resp.ok) return { ok: false, error: `API error (${resp.status}): ${respText.slice(0, 400)}${dbgDir ? `（详见 ${dbgDir}）` : ""}` };
