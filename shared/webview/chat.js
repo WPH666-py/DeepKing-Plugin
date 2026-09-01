@@ -159,7 +159,7 @@
     const hint = $("#ctxHint"); if (!hint) return;
     const toolsOn = state.settings.tools !== false && state.settings.max !== false;
     const mmOn = state.settings.multimodal !== false;
-    hint.textContent = `模式：${toolsOn ? "Agent（16 工具）" : "纯文字（工具关）"} · ${mmOn ? "多模态开" : "多模态关"}`;
+    hint.textContent = `模式：${toolsOn ? "Agent（19 工具）" : "纯文字（工具关）"} · ${mmOn ? "多模态开" : "多模态关"}`;
   }
   /** 对标 DeepKing：多模态未开启 → 隐藏视觉识别配置（无需填写） */
   function syncVisionVisibility() {

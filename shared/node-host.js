@@ -22,6 +22,7 @@ Rules:
 - For unknown codebases FIRST call glob + grep to build a map.
 - Use bash for any build/test/run. Prefer small, runnable iterations; verify after each step.
 - Before editing an existing file, call read on it first (exact content for old_string).
+- Efficiency: ONE batch_edit/batch_write call for several files; delegate independent subtasks to subagents (1-4, parallel).
 - If a tool call fails twice, switch approach and explain why.
 - When done, output a concise summary with file paths. No iteration limit: keep working until the task is fully complete.`,
   },
@@ -32,6 +33,7 @@ Rules:
 - Plan → Generate → Review → Refine. State your plan briefly before generating code.
 - Prefer minimal runnable iterations; verify after each step.
 - Read before edit; exact old_string matching.
+- Efficiency: ONE batch_edit/batch_write call for several files; delegate independent subtasks to subagents (1-4, parallel).
 - Every 5 iterations review the original goal and stop if it is complete.
 - Output a concise summary when done. No iteration limit: keep working until the task is fully complete.`,
   },
@@ -42,7 +44,9 @@ Rules:
 - For any non-trivial task FIRST call todo_write to break it into subtasks; mark in_progress/completed.
 - Mirror the existing project style: read similar files first, then write consistent code.
 - Prefer complete runnable code over partial snippets. Chinese answers are welcome.
-- Read before edit. No iteration limit: keep working until the task is fully complete.`,
+- Read before edit.
+- Efficiency: ONE batch_edit/batch_write call for several files; delegate independent subtasks to subagents (1-4, parallel).
+- No iteration limit: keep working until the task is fully complete.`,
   },
   dsg: {
     label: "DSG (GLM5.3)",
@@ -52,6 +56,7 @@ Rules:
 - Check usages with grep before editing shared functions.
 - Be concise: show code first, reasoning only when asked.
 - Read before edit; handle edge cases explicitly.
+- Efficiency: ONE batch_edit/batch_write call for several files; delegate independent subtasks to subagents (1-4, parallel).
 - No iteration limit: keep working until the task is fully complete.`,
   },
 };
@@ -61,11 +66,20 @@ const TOOL_SCHEMAS = [
   tool("read", "Read a file from the workspace. Returns lines with numbers. Use offset/limit for large files.", {
     type: "object", properties: { file_path: { type: "string" }, offset: { type: "integer" }, limit: { type: "integer" } }, required: ["file_path"],
   }),
-  tool("write", "Create or overwrite a file. content MUST be <= 2000 chars; for longer files, write first chunk then append with edit.", {
+  tool("write", "Create or overwrite a file. content up to 60000 chars — prefer writing the WHOLE file in one call (no chunking).", {
     type: "object", properties: { file_path: { type: "string" }, content: { type: "string" } }, required: ["file_path", "content"],
   }),
   tool("edit", "Edit a file by replacing an exact string (old_string). MUST read the file first.", {
     type: "object", properties: { file_path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" }, replace_all: { type: "boolean" } }, required: ["file_path", "old_string", "new_string"],
+  }),
+  tool("batch_write", "Write MULTIPLE files in ONE call (array of {file_path, content}, each content up to 60000 chars). Use for creating/overwriting several files at once.", {
+    type: "object", properties: { files: { type: "array", items: { type: "object", properties: { file_path: { type: "string" }, content: { type: "string" } }, required: ["file_path", "content"] } } }, required: ["files"],
+  }),
+  tool("batch_edit", "Apply MULTIPLE exact-string edits ACROSS MULTIPLE FILES in ONE call (array of {file_path, old_string, new_string, replace_all}). Prefer this over many separate edit calls.", {
+    type: "object", properties: { edits: { type: "array", items: { type: "object", properties: { file_path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" }, replace_all: { type: "boolean" } }, required: ["file_path", "old_string", "new_string"] } } }, required: ["edits"],
+  }),
+  tool("subagents", "Run 1-4 INDEPENDENT sub-agent tasks IN PARALLEL. Each sub-agent has a fresh context and the full tool set (read/edit/bash/grep/batch_edit...), runs up to 40 rounds, and returns its conclusion. Use for parallel investigation/fixing of independent files or modules: ONE call replaces many sequential calls. Result is a per-task summary.", {
+    type: "object", properties: { tasks: { type: "array", minItems: 1, maxItems: 4, items: { type: "object", properties: { id: { type: "string" }, instruction: { type: "string" } }, required: ["id", "instruction"] } } }, required: ["tasks"],
   }),
   tool("delete", "Delete a file (or empty folder). Use with caution.", {
     type: "object", properties: { file_path: { type: "string" } }, required: ["file_path"],
@@ -133,6 +147,8 @@ function execTool(workdir, name, args, ctx) {
     if (name === "web_search") return toolWebSearch(args);
     if (name === "install_python_package") return toolInstallPackage(workdir, args);
     if (name === "check_python_package") return toolCheckPythonPackage(workdir, args);
+    if (name === "batch_write") return toolBatchWrite(workdir, args, ctx);
+    if (name === "batch_edit") return toolBatchEdit(workdir, args, ctx);
     if (name === "bash") return { success: false, output: "bash 走异步 runBash", data: null };
     return { success: false, output: `Unknown tool: ${name}`, data: null };
   } catch (e) {
@@ -243,6 +259,62 @@ function toolInstallPackage(workdir, args) {
   const pkg = String(args.package || "").trim();
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(pkg)) return { success: false, output: `拒绝安装：包名不合法（仅允许字母/数字/._-，禁止 shell 元字符）: ${pkg}`, data: { exit_code: -1 } };
   return runBash(workdir, `python -m pip install -q ${pkg}`, 120000).then((r) => ({ success: r.success, output: truncate(r.output, 2000), data: r.data }));
+}
+/* ───────── 批量多文件写/改（一次调用 = 多个文件，大幅减少主循环步数） ───────── */
+function toolBatchWrite(workdir, args, ctx) {
+  const files = Array.isArray((args || {}).files) ? args.files : [];
+  if (!files.length) return { success: false, output: "files 为空（需要 [{file_path, content}]）", data: null };
+  const report = [];
+  let ok = 0;
+  for (const f of files) {
+    const full = resolvePath(workdir, (f && f.file_path) || "");
+    if (!full) { report.push("❌ file_path 为空"); continue; }
+    try {
+      if (ctx && ctx.onUndo) recordUndo(workdir, "write", f, ctx.onUndo);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, (f && f.content) || "", "utf8");
+      ok++;
+      report.push(`✅ ${f.file_path}（${Buffer.byteLength(String((f && f.content) || ""))} chars）`);
+    } catch (e) { report.push(`❌ ${f.file_path}: ${e.message}`); }
+  }
+  return { success: ok === files.length, output: `批量写入 ${ok}/${files.length}\n` + report.join("\n"), data: { written: ok } };
+}
+function toolBatchEdit(workdir, args, ctx) {
+  const edits = Array.isArray((args || {}).edits) ? args.edits : [];
+  if (!edits.length) return { success: false, output: "edits 为空（需要 [{file_path, old_string, new_string}]）", data: null };
+  const report = [];
+  let ok = 0;
+  for (const e of edits) {
+    const full = resolvePath(workdir, (e && e.file_path) || "");
+    if (!fs.existsSync(full)) { report.push(`❌ ${e.file_path}: 文件不存在`); continue; }
+    let content; try { content = fs.readFileSync(full, "utf8"); } catch (ex) { report.push(`❌ ${e.file_path}: ${ex.message}`); continue; }
+    const oldString = (e && e.old_string) || "";
+    if (!oldString || !content.includes(oldString)) { report.push(`❌ ${e.file_path}: old_string 未找到（请先 read 获取精确内容）`); continue; }
+    const count = content.split(oldString).length - 1;
+    if (!e.replace_all && count > 1) { report.push(`❌ ${e.file_path}: old_string 出现 ${count} 次，请设置 replace_all=true 或提供更多上下文`); continue; }
+    try {
+      if (ctx && ctx.onUndo) recordUndo(workdir, "edit", e, ctx.onUndo);
+      const next = e.replace_all ? content.split(oldString).join(e.new_string || "") : content.replace(oldString, e.new_string || "");
+      fs.writeFileSync(full, next, "utf8");
+      ok++;
+      report.push(`✅ ${e.file_path}（${e.replace_all ? count : 1} 处）`);
+    } catch (ex) { report.push(`❌ ${e.file_path}: ${ex.message}`); }
+  }
+  return { success: ok === edits.length, output: `批量编辑 ${ok}/${edits.length}\n` + report.join("\n"), data: { edited: ok } };
+}
+/* ───────── 并行子智能体：独立上下文 + 全套工具并发执行，结论汇总回主循环 ───────── */
+async function toolSubagents(config, mode, workdir, args, onEvent, vision, onUndo, runId) {
+  const tasks = Array.isArray((args || {}).tasks) ? args.tasks.filter((t) => t && t.instruction).slice(0, 4) : [];
+  if (!tasks.length) return { success: false, output: "tasks 为空（需要 [{id, instruction}]，最多 4 个）", data: null };
+  const runOne = (t) => {
+    const subId = `s${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const silent = () => {}; // 子智能体事件不直接上屏；其结论通过工具结果回传给主模型
+    return runAgentLoop(config, mode || "dsh", String(t.instruction || ""), [], workdir, silent, vision, onUndo, subId, { maxIter: 40 })
+      .then((r) => ({ id: t.id || "task", content: (r && r.content) || "", error: (r && r.error) || null }));
+  };
+  const results = await Promise.all(tasks.map(runOne));
+  const lines = results.map((r) => `## ${r.id}${r.error ? "（出错）" : ""}\n${r.error ? "ERROR: " + r.error : (r.content || "（空结果）")}`);
+  return { success: results.every((r) => !r.error), output: `✅ 子智能体完成 ${results.filter((r) => !r.error).length}/${tasks.length}\n\n` + lines.join("\n\n"), data: { tasks: results.length } };
 }
 function toolReadImage(workdir, args, visionCfg) {
   if (!visionCfg || !visionCfg.apiKey) return { success: false, output: "视觉引擎未配置（设置 → 视觉识别填写 API Key）", data: null };
@@ -494,10 +566,11 @@ function applyUndo(entries) {
 }
 
 /* ───────── Agent Loop（agent_loop.rs；max/工具开关 + 压缩 + 撤销日志） ───────── */
-async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent, vision, onUndo, runId) {
+async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent, vision, onUndo, runId, opts) {
   const persona = MODES[mode] || MODES.dsh;
   const useTools = config.tools !== false && config.max !== false;
-  const maxIter = 0; // 0 = 不设步数上限：循环只会在模型给出结论（不再调用工具）或出错时结束；上下文超阈值自动摘要压缩
+  /* 0 = 不设步数上限：循环只会在模型给出结论（不再调用工具）或出错时结束；上下文超阈值自动摘要压缩 */
+  const maxIter = opts && opts.maxIter ? opts.maxIter : 0;
   const com = compressHistory(history.filter((m) => m.role !== "system"));
   let messages = com.history.map((m) => ({ role: m.role, content: m.content, reasoning_content: m.reasoning_content, tool_calls: m.tool_calls, tool_call_id: m.tool_call_id, name: m.name })).filter((m) => m.role !== "system");
   messages.push({ role: "user", content: userMessage });
@@ -508,9 +581,9 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
   for (let iter = 0; maxIter === 0 || iter < maxIter; iter++) {
     onEvent({ type: "iteration", current: iter + 1, max: maxIter || null });
     const resp = await deepseekChat(config, persona.system, messages, schemas, { workdir, runId });
-    if (!resp.ok) { onEvent({ type: "error", message: resp.error }); return; }
+    if (!resp.ok) { onEvent({ type: "error", message: resp.error }); return { error: resp.error }; }
     const choice = resp.data.choices && resp.data.choices[0];
-    if (!choice) { onEvent({ type: "error", message: "无有效响应" }); return; }
+    if (!choice) { onEvent({ type: "error", message: "无有效响应" }); return { error: "无有效响应" }; }
     const msg = choice.message || {};
     /* thinking 模式（deepseek-v4-pro 等）要求：assistant 消息的 reasoning_content 必须回传，否则 400 */
     if (msg.reasoning_content !== undefined) finalReasoning = String(msg.reasoning_content);
@@ -533,22 +606,23 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
       return { id: c.id, type: "function", function: { name, arguments: c.function ? j(c.function.arguments) : j(c.arguments) } };
     });
     messages.push({ role: "assistant", content: apiCalls.length ? null : (rawText || null), reasoning_content: msg.reasoning_content !== undefined ? String(msg.reasoning_content) : undefined, tool_calls: apiCalls.length ? apiCalls : undefined });
-    if (!calls.length) { onEvent({ type: "done", content: finalContent, reasoning_content: finalReasoning || undefined, total_iterations: iter + 1, total_tool_calls: toolCount }); return; }
+    if (!calls.length) { onEvent({ type: "done", content: finalContent, reasoning_content: finalReasoning || undefined, total_iterations: iter + 1, total_tool_calls: toolCount }); return { content: finalContent, reasoning_content: finalReasoning || undefined, iterations: iter + 1, tool_calls: toolCount }; }
     for (const raw of calls) {
       toolCount++;
       const call = raw.function ? normalizeCall(raw) : raw;
       onEvent({ type: "tool_call_requested", id: call.id, name: call.name, arguments: call.arguments });
       let result;
       if (call.name === "bash") result = await runBash(workdir, call.arguments.command || "", call.arguments.timeout_ms);
+      else if (call.name === "subagents") result = await toolSubagents(config, mode, workdir, call.arguments, onEvent, vision, onUndo, runId);
       else {
         // 写入类工具执行前记录撤销日志（撤回对话时整体回退）
         if (["write", "edit", "delete"].includes(call.name)) recordUndo(workdir, call.name, call.arguments, onUndo);
-        result = execTool(workdir, call.name, call.arguments, { vision }); if (result instanceof Promise) result = await result;
+        result = execTool(workdir, call.name, call.arguments, { vision, onUndo }); if (result instanceof Promise) result = await result;
       }
       const output = truncate(result.output || "", 3200);
       onEvent({ type: "tool_call_executed", id: call.id, name: call.name, success: result.success, output });
       messages.push({ role: "tool", tool_call_id: call.id, name: call.name, content: (result.success ? "" : "[ERROR] ") + output });
-      if (/^(write|edit|delete|bash)$/.test(call.name) && result.success) onEvent({ type: "file_changed", reason: call.name });
+      if (/^(write|edit|delete|bash|batch_write|batch_edit|subagents)$/.test(call.name) && result.success) onEvent({ type: "file_changed", reason: call.name });
     }
     /* 每轮结束后检查：上下文超阈值就把早期轮次摘要压缩，保留最近内容 */
     const compacted = compactInLoop(messages, LOOP_KEEP_BUDGET);
@@ -569,7 +643,7 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
     /* 总结轮若仍出现 DSML 工具调用文本：执行后最多再要 2 次总结（bounded） */
     for (let sRetry = 0; sRetry < 3; sRetry++) {
       const sum = await deepseekChat(config, persona.system, messages, null, { workdir, runId });
-      if (!sum.ok) { onEvent({ type: "error", message: sum.error }); return; }
+      if (!sum.ok) { onEvent({ type: "error", message: sum.error }); return { error: sum.error }; }
       const sm = sum.data.choices && sum.data.choices[0] ? (sum.data.choices[0].message || {}) : {};
       if (sm.reasoning_content !== undefined) finalReasoning = String(sm.reasoning_content);
       sumText = String(sm.content || "");
@@ -584,9 +658,10 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
         onEvent({ type: "tool_call_requested", id: call.id, name: call.name, arguments: call.arguments });
         let result;
         if (call.name === "bash") result = await runBash(workdir, call.arguments.command || "", call.arguments.timeout_ms);
+        else if (call.name === "subagents") result = await toolSubagents(config, mode, workdir, call.arguments, onEvent, vision, onUndo, runId);
         else {
           if (["write", "edit", "delete"].includes(call.name)) recordUndo(workdir, call.name, call.arguments, onUndo);
-          result = execTool(workdir, call.name, call.arguments, { vision }); if (result instanceof Promise) result = await result;
+          result = execTool(workdir, call.name, call.arguments, { vision, onUndo }); if (result instanceof Promise) result = await result;
         }
         const output = truncate(result.output || "", 3200);
         onEvent({ type: "tool_call_executed", id: call.id, name: call.name, success: result.success, output });
@@ -597,6 +672,7 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
     if (finalContent && !/<tool_calls>/.test(finalContent)) onEvent({ type: "assistant_text", content: finalContent });
   }
   onEvent({ type: "done", content: finalContent, reasoning_content: finalReasoning || undefined, total_iterations: maxIter, total_tool_calls: toolCount });
+  return { content: finalContent, reasoning_content: finalReasoning || undefined, iterations: maxIter || 0, tool_calls: toolCount };
 }
 
 /* ───────── 多模态流程：识图 → 结合问题发送 ───────── */
