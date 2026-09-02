@@ -5,7 +5,8 @@
   "main": "installer.js",
   "bin": {
     "deepking-install": "./installer.js",
-    "deepking-uninstall": "./uninstaller.js"
+    "deepking-uninstall": "./uninstaller.js",
+    "deepking-serve": "./shared/node-host.js"
   },
   "scripts": {
     "postinstall": "node ./installer.js"
