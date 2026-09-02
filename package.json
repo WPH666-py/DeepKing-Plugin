@@ -1,6 +1,6 @@
 {
   "name": "deepking-plugin",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "DeepKing · AI 助手插件（npm 安装器）：把 DeepKing AI 助手（DeepSeek 对话 + 多模式 Persona + 工具 Agent Loop）自动装入 Trae / VSCode / Cursor 等 VSCode 系 IDE 侧边栏。DeepKing 本体零改动。",
   "main": "installer.js",
   "bin": {

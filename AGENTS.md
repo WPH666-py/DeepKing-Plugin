@@ -15,9 +15,9 @@
    ```bash
    cd <clone>/vscode
    npx --yes @vscode/vsce package
-   code --install-extension ./deepking-plugin-0.1.3.vsix
+   code --install-extension ./deepking-plugin-0.1.4.vsix
    ```
-   若无网络/CLI：把 `vscode/` 整个目录复制到 `%USERPROFILE%\.vscode\extensions\wp666.deepking-plugin-0.1.0\`（Trae/CodeX 兼容），并提示用户重启编辑器。
+   若无网络/CLI：把 `vscode/` 整个目录复制到 `%USERPROFILE%\.vscode\extensions\wp666.deepking-plugin-0.1.4\`（Trae/CodeX 兼容），并提示用户重启编辑器。
 3. 告知用户：活动栏鲸鱼图标（DeepKing）→ 侧边栏 AI 助手 → 右上角 ⚙ 配置 DeepSeek API Key 后即可对话。
 
 ## B. PyCharm / WebStorm（JetBrains）
@@ -28,7 +28,7 @@
    cd <clone>/jetbrains
    ./gradlew buildPlugin
    ```
-3. 安装 `build/distributions/deepking-plugin-0.1.3.zip`：IDE → Settings → Plugins → ⚙ → Install Plugin from Disk → 重启。
+3. 安装 `build/distributions/deepking-plugin-0.1.4.zip`：IDE → Settings → Plugins → ⚙ → Install Plugin from Disk → 重启。
 4. 告知用户：右侧 **DeepKing** 面板即 AI 助手（JCEF 内嵌，同款界面）。
 
 ## C. 浏览器模式

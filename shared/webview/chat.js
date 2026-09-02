@@ -25,8 +25,8 @@
   const cleanKey = (raw) => String(raw || "").replace(/\s+/g, "").replace(/[^\x21-\x7E]/g, "");
 
   const MODES = [
-    { id: "dsh", label: "DSH (Harness)" }, { id: "dsk", label: "DSK (K3)" },
-    { id: "dsq", label: "DSQ (Qwen3.8)" }, { id: "dsg", label: "DSG (GLM5.3)" },
+    { id: "dsh", label: "DSH (Harness)" }, { id: "dsk", label: "DSK (Kimi Code 引擎)" },
+    { id: "dsq", label: "DSQ (Qwen Code 引擎)" }, { id: "dsg", label: "DSG (GLM-5 引擎)" },
   ];
 
   /* ── 传输层 ── */

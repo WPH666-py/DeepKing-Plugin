@@ -21,10 +21,12 @@
 
   const $ = (s) => { try { return document.querySelector(s); } catch (_) { return null; } };
   const val = (id) => { const n = document.getElementById(id); return n ? n.value : ""; };
+  /* API Key 必须是纯 ASCII 无空白字符串；粘贴时易混入全角空格/换行/中文，保存前自动清洗 */
+  const cleanKey = (raw) => String(raw || "").replace(/\s+/g, "").replace(/[^\x21-\x7E]/g, "");
 
   const MODES = [
-    { id: "dsh", label: "DSH (Harness)" }, { id: "dsk", label: "DSK (K3)" },
-    { id: "dsq", label: "DSQ (Qwen3.8)" }, { id: "dsg", label: "DSG (GLM5.3)" },
+    { id: "dsh", label: "DSH (Harness)" }, { id: "dsk", label: "DSK (Kimi Code 引擎)" },
+    { id: "dsq", label: "DSQ (Qwen Code 引擎)" }, { id: "dsg", label: "DSG (GLM-5 引擎)" },
   ];
 
   /* ── 传输层 ── */
@@ -157,7 +159,7 @@
     const hint = $("#ctxHint"); if (!hint) return;
     const toolsOn = state.settings.tools !== false && state.settings.max !== false;
     const mmOn = state.settings.multimodal !== false;
-    hint.textContent = `模式：${toolsOn ? "Agent（16 工具）" : "纯文字（工具关）"} · ${mmOn ? "多模态开" : "多模态关"}`;
+    hint.textContent = `模式：${toolsOn ? "Agent（19 工具）" : "纯文字（工具关）"} · ${mmOn ? "多模态开" : "多模态关"}`;
   }
   /** 对标 DeepKing：多模态未开启 → 隐藏视觉识别配置（无需填写） */
   function syncVisionVisibility() {
@@ -169,7 +171,10 @@
     updateModeHint();
   }
   function saveSettingsFromUI() {
-    state.settings.apiKey = val("setKey").trim();
+    const rawKey = val("setKey").trim();
+    const apiKey = cleanKey(rawKey);
+    const keyWarn = apiKey !== rawKey ? "API Key 已自动清理空白/非 ASCII 字符；若仍报错，请清空后重新粘贴 sk- 开头的密钥" : null;
+    state.settings.apiKey = apiKey;
     state.settings.baseUrl = val("setBase").trim() || "https://api.deepseek.com";
     state.settings.model = val("setModel").trim() || "deepseek-chat";
     state.settings.workdir = val("setWorkdir").trim();
@@ -177,16 +182,18 @@
     state.settings.tools = chkV("swTools");
     state.settings.max = chkV("swMax");
     state.settings.multimodal = chkV("swMM");
+    const rawVKey = val("visionKey").trim();
     state.settings.vision = {
       provider: val("visionProvider").trim() || "modlens",
-      apiKey: val("visionKey").trim(),
+      apiKey: cleanKey(rawVKey),
       baseUrl: val("visionBase").trim() || "https://api.openai.com/v1",
       model: val("visionModel").trim() || "gpt-4o-mini",
     };
     persist(state);
     if (vscode) { try { vscode.postMessage({ type: "saveConfig", config: state.settings }); } catch (_) {} }
     updateModeHint();
-    if (!state.running) finishStatus("✅ 配置已保存", false);
+    if (keyWarn) finishStatus("⚠️ " + keyWarn, true);
+    else if (!state.running) finishStatus("✅ 配置已保存", false);
     const wl = $("#workdirLabel"); if (wl) wl.textContent = state.settings.workdir || "(工作目录见设置)";
   }
 
@@ -197,18 +204,19 @@
       if (!k || !k.type || !AGENT_EVENT_TYPES.includes(k.type)) return;
       lastEventAt = Date.now();
       if (k.type === "started") {
-        state.progress = `0/${k.max_iterations} 步`;
+        state.progress = `0/${k.max_iterations || "∞"} 步`;
         state.currentRunId = k.run_id || null;
         armWatchdog();
       }
-      else if (k.type === "iteration") { state.progress = `${k.current}/${k.max} 步`; }
+      else if (k.type === "iteration") { state.progress = `${k.current}/${k.max || "∞"} 步`; }
       else if (k.type === "tool_call_requested") { state.toolCalls.push({ id: k.id, name: k.name, arguments: k.arguments, status: "running", output: "" }); }
       else if (k.type === "tool_call_executed") { const tc = state.toolCalls.find((t) => t.id === k.id); if (tc) { tc.success = k.success; tc.output = k.output; tc.status = k.success ? "done" : "error"; } }
       else if (k.type === "assistant_text") { state.assistant = (state.assistant || "") + k.content; }
       else if (k.type === "done") {
         disarmWatchdog();
         const content = state.assistant || k.content || "";
-        state.messages.push({ role: "assistant", content });
+        /* thinking 模式要求 reasoning_content 回传：存入消息，下次发送时随 history 带回 API */
+        state.messages.push({ role: "assistant", content, reasoning_content: k.reasoning_content || undefined });
         state.assistant = ""; state.toolCalls = []; state.progress = "";
         // 记录本次运行（撤回用）：绑定到当前用户消息
         if (state.currentRunId && state.pendingRunUser) state.runIds[state.pendingRunUser] = state.currentRunId;
@@ -241,7 +249,11 @@
       if (m && m.type === "ev") onAgentEvent(m.ev);
       else if (m && m.type === "config") {
         // 宿主配置（globalState 的真正来源）合并进本地状态并刷新 UI
-        if (m.config) { state.settings = { ...state.settings, ...(m.config || {}) }; persist(state); }
+        if (m.config) {
+          const k = String(m.config.apiKey || "");
+          if (/[\s\u0080-\uFFFF]/.test(k) || /[^\x21-\x7E]/.test(k)) showBanner("⚠️ 检测到保存的 API Key 内容异常（含空白或非 ASCII 字符，可能粘错了内容）。请清空后重新粘贴正确的 sk- 密钥。");
+          state.settings = { ...state.settings, ...(m.config || {}) }; persist(state);
+        }
         updateSettingsUI(); updateModeHint();
         const p = $("#progress");
         if (p && !state.running) { finishStatus("✅ 配置已加载", false); }

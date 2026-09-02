@@ -2,7 +2,7 @@
   "name": "deepking-plugin",
   "displayName": "DeepKing · AI 助手",
   "description": "将 DeepKing 的多模态 Agentic IDE AI 助手（DeepSeek 对话 + 16 工具 Agent Loop + 多模式 Persona）以侧边栏形式带入 VSCode / Trae / CodeX。图标 DeepKing。",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "WPH666-py",
   "license": "MIT",
   "icon": "media/deepking.png",

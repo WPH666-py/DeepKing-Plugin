@@ -17,7 +17,7 @@ function loadHost() {
   for (const c of candidates) if (require("fs").existsSync(c)) return require(c);
   throw new Error("DeepKing 核心缺失（shared/node-host.js）。请重新安装扩展。");
 }
-const { runAgentLoop, handleMultimodal, applyUndo } = loadHost();
+const { runWorkflow, handleMultimodal, applyUndo } = loadHost();
 
 /* Webview UI 目录：安装版(./shared/webview) 优先，仓库开发版(../shared/webview) 兜底 */
 const WEBVIEW_DIR = require("fs").existsSync(path.join(__dirname, "shared", "webview"))
@@ -50,7 +50,7 @@ class DeepKingViewProvider {
         const onUndo = (entry) => { const log = this.undoStore[runId]; if (log) log.push(entry); };
         if (msg.type === "chat") {
           if (!config.apiKey) { this.ev({ type: "error", message: "请在上方配置 DeepSeek API Key" }); return; }
-          await runAgentLoop(config, msg.mode || "dsh", msg.content || "", msg.history || [], workdir, post, vision, onUndo, runId);
+          await runWorkflow(config, msg.mode || "dsh", msg.content || "", msg.history || [], workdir, post, vision, onUndo, runId);
         } else {
           await handleMultimodal(config, vision, msg.dataUrl || "", msg.mime || "png", msg.prompt || "", workdir, post, onUndo, runId);
         }

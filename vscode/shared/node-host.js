@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /* ============================================================
- * DeepKing-Plugin · shared/node-host.js  (v0.1.3 功能对齐 DeepKing)
+ * DeepKing-Plugin · shared/node-host.js  (v0.1.4 功能对齐 DeepKing 0.2.0)
  * - DeepSeek 客户端 + Agent Loop（含上下文自动压缩）
+ * - 四模式×原装工作流引擎：DSH(原生)/DSK(Kimi Code)/DSQ(Qwen Code)/DSG(GLM-5)
+ *   与 DeepKing src/ai/workflow/*.rs 同款编排（规划→执行→审查阶段）
  * - 工具集：read/write/edit/bash/grep/glob/todo/task/check_runtime
  *           delete/read_image(视觉)/read_pdf/read_excel/web_search/install/check python
  * - 多模态视觉：ModLens / DeepSeek-OCR（OpenAI 兼容 vision API，移植自 DeepKing vision.rs）
@@ -12,47 +14,70 @@ const fs = require("fs");
 const path = require("path");
 const { execFile } = require("child_process");
 
-/* ───────── 模式 Persona ───────── */
+/* ───────── 模式 × 原装厂商工作流引擎 ─────────
+ * DSK/DSQ/DSG 由 Rust 移植（DeepKing）并在此 JS 复刻的厂商原装工作流引擎驱动，
+ * 与 DeepSeek 运行时强强结合（不是仅靠提示词模拟风格）。原版源码见 DeepKing vendor/。 */
 const MODES = {
   dsh: {
     label: "DSH (Harness)",
+    engine: "DeepSeek Harness 原生 Agent",
+    upstream: "deepseek-ai",
+    license: "MIT",
+    mechanism: "原生 Agent Loop：架构先行、长任务可追踪、工具驱动自主执行",
     system: `You are an autonomous coding agent (DeepSeek Harness style) working in the user's workspace.
 Rules:
 - For multi-step tasks FIRST call todo_write to plan; mark items completed as you go.
 - For unknown codebases FIRST call glob + grep to build a map.
 - Use bash for any build/test/run. Prefer small, runnable iterations; verify after each step.
 - Before editing an existing file, call read on it first (exact content for old_string).
+- Efficiency: ONE batch_edit/batch_write call for several files; delegate independent subtasks to subagents (1-4, parallel).
 - If a tool call fails twice, switch approach and explain why.
-- When done, output a concise summary with file paths. Max iterations: 25.`,
+- When done, output a concise summary with file paths. No iteration limit: keep working until the task is fully complete.`,
   },
   dsk: {
-    label: "DSK (K3)",
-    system: `You are a fast-iteration coding agent (K3 style).
+    label: "DSK (Kimi Code 引擎)",
+    engine: "Kimi Code CLI 原装工作流",
+    upstream: "MoonshotAI/kimi-code",
+    license: "MIT",
+    mechanism: "Next-Gen Agent：计划 → 工具执行 → 子智能体(Tower)审查修复，无步数上限",
+    system: `You are a fast-iteration coding agent running the ORIGINAL Kimi Code CLI workflow (MoonshotAI/kimi-code, MIT): plan → execute with tools → sub-agent review/refine.
 Rules:
 - Plan → Generate → Review → Refine. State your plan briefly before generating code.
 - Prefer minimal runnable iterations; verify after each step.
 - Read before edit; exact old_string matching.
+- Efficiency: ONE batch_edit/batch_write call for several files; delegate independent subtasks to subagents (1-4, parallel).
 - Every 5 iterations review the original goal and stop if it is complete.
-- Output a concise summary when done. Max iterations: 15.`,
+- Output a concise summary when done. No iteration limit: keep working until the task is fully complete.`,
   },
   dsq: {
-    label: "DSQ (Qwen3.8)",
-    system: `You are a collaborative coding agent (Qwen3.8 style).
+    label: "DSQ (Qwen Code 引擎)",
+    engine: "Qwen Code 原装工作流",
+    upstream: "QwenLM/qwen-code",
+    license: "Apache-2.0",
+    mechanism: "Planning 计划模式 + Agent Team 并行协作：先拆解计划，再并行执行",
+    system: `You are a collaborative coding agent running the ORIGINAL Qwen Code workflow (QwenLM/qwen-code, Apache-2.0): planning mode 计划-执行-验证 + Agent Team 并行协作.
 Rules:
 - For any non-trivial task FIRST call todo_write to break it into subtasks; mark in_progress/completed.
 - Mirror the existing project style: read similar files first, then write consistent code.
 - Prefer complete runnable code over partial snippets. Chinese answers are welcome.
-- Read before edit. Max iterations: 18.`,
+- Read before edit.
+- Efficiency: ONE batch_edit/batch_write call for several files; delegate independent subtasks to subagents (1-4, parallel).
+- No iteration limit: keep working until the task is fully complete.`,
   },
   dsg: {
-    label: "DSG (GLM5.3)",
-    system: `You are a global-view coding agent (GLM5.3 style).
+    label: "DSG (GLM-5 引擎)",
+    engine: "GLM-5 Skills 原装工作流",
+    upstream: "zai-org/GLM-5",
+    license: "Apache-2.0",
+    mechanism: "Skills 技能驱动 Agentic Engineering：全局上下文，构建 → 测试 → 审查 → 文档",
+    system: `You are a global-view coding agent running the ORIGINAL GLM-5 agentic engineering workflow (zai-org/GLM-5, Apache-2.0): skills-driven 构建 → 测试 → 审查 → 文档.
 Rules:
 - For unfamiliar codebases call glob + grep first.
 - Check usages with grep before editing shared functions.
 - Be concise: show code first, reasoning only when asked.
 - Read before edit; handle edge cases explicitly.
-- Max iterations: 20.`,
+- Efficiency: ONE batch_edit/batch_write call for several files; delegate independent subtasks to subagents (1-4, parallel).
+- No iteration limit: keep working until the task is fully complete.`,
   },
 };
 
@@ -61,11 +86,20 @@ const TOOL_SCHEMAS = [
   tool("read", "Read a file from the workspace. Returns lines with numbers. Use offset/limit for large files.", {
     type: "object", properties: { file_path: { type: "string" }, offset: { type: "integer" }, limit: { type: "integer" } }, required: ["file_path"],
   }),
-  tool("write", "Create or overwrite a file. content MUST be <= 2000 chars; for longer files, write first chunk then append with edit.", {
+  tool("write", "Create or overwrite a file. content up to 60000 chars — prefer writing the WHOLE file in one call (no chunking).", {
     type: "object", properties: { file_path: { type: "string" }, content: { type: "string" } }, required: ["file_path", "content"],
   }),
   tool("edit", "Edit a file by replacing an exact string (old_string). MUST read the file first.", {
     type: "object", properties: { file_path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" }, replace_all: { type: "boolean" } }, required: ["file_path", "old_string", "new_string"],
+  }),
+  tool("batch_write", "Write MULTIPLE files in ONE call (array of {file_path, content}, each content up to 60000 chars). Use for creating/overwriting several files at once.", {
+    type: "object", properties: { files: { type: "array", items: { type: "object", properties: { file_path: { type: "string" }, content: { type: "string" } }, required: ["file_path", "content"] } } }, required: ["files"],
+  }),
+  tool("batch_edit", "Apply MULTIPLE exact-string edits ACROSS MULTIPLE FILES in ONE call (array of {file_path, old_string, new_string, replace_all}). Prefer this over many separate edit calls.", {
+    type: "object", properties: { edits: { type: "array", items: { type: "object", properties: { file_path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" }, replace_all: { type: "boolean" } }, required: ["file_path", "old_string", "new_string"] } } }, required: ["edits"],
+  }),
+  tool("subagents", "Run 1-4 INDEPENDENT sub-agent tasks IN PARALLEL. Each sub-agent has a fresh context and the full tool set (read/edit/bash/grep/batch_edit...), runs up to 40 rounds, and returns its conclusion. Use for parallel investigation/fixing of independent files or modules: ONE call replaces many sequential calls. Result is a per-task summary.", {
+    type: "object", properties: { tasks: { type: "array", minItems: 1, maxItems: 4, items: { type: "object", properties: { id: { type: "string" }, instruction: { type: "string" } }, required: ["id", "instruction"] } } }, required: ["tasks"],
   }),
   tool("delete", "Delete a file (or empty folder). Use with caution.", {
     type: "object", properties: { file_path: { type: "string" } }, required: ["file_path"],
@@ -112,6 +146,10 @@ function tool(name, description, parameters) { return { type: "function", functi
 /* ───────── 工具执行 ───────── */
 function resolvePath(workdir, p) { return path.isAbsolute(p) ? p : path.join(workdir, p); }
 function truncate(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n) + `... [truncated, ${s.length} total chars]` : s; }
+/* API Key 必然是纯 ASCII 无空白字符串；粘贴时常混入全角/不换行空格、换行或中文，先清洗再使用 */
+function cleanApiKey(k) {
+  return String(k || "").replace(/\s+/g, "").replace(/[^\x21-\x7E]/g, "");
+}
 
 function execTool(workdir, name, args, ctx) {
   try {
@@ -129,6 +167,8 @@ function execTool(workdir, name, args, ctx) {
     if (name === "web_search") return toolWebSearch(args);
     if (name === "install_python_package") return toolInstallPackage(workdir, args);
     if (name === "check_python_package") return toolCheckPythonPackage(workdir, args);
+    if (name === "batch_write") return toolBatchWrite(workdir, args, ctx);
+    if (name === "batch_edit") return toolBatchEdit(workdir, args, ctx);
     if (name === "bash") return { success: false, output: "bash 走异步 runBash", data: null };
     return { success: false, output: `Unknown tool: ${name}`, data: null };
   } catch (e) {
@@ -240,6 +280,62 @@ function toolInstallPackage(workdir, args) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(pkg)) return { success: false, output: `拒绝安装：包名不合法（仅允许字母/数字/._-，禁止 shell 元字符）: ${pkg}`, data: { exit_code: -1 } };
   return runBash(workdir, `python -m pip install -q ${pkg}`, 120000).then((r) => ({ success: r.success, output: truncate(r.output, 2000), data: r.data }));
 }
+/* ───────── 批量多文件写/改（一次调用 = 多个文件，大幅减少主循环步数） ───────── */
+function toolBatchWrite(workdir, args, ctx) {
+  const files = Array.isArray((args || {}).files) ? args.files : [];
+  if (!files.length) return { success: false, output: "files 为空（需要 [{file_path, content}]）", data: null };
+  const report = [];
+  let ok = 0;
+  for (const f of files) {
+    const full = resolvePath(workdir, (f && f.file_path) || "");
+    if (!full) { report.push("❌ file_path 为空"); continue; }
+    try {
+      if (ctx && ctx.onUndo) recordUndo(workdir, "write", f, ctx.onUndo);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, (f && f.content) || "", "utf8");
+      ok++;
+      report.push(`✅ ${f.file_path}（${Buffer.byteLength(String((f && f.content) || ""))} chars）`);
+    } catch (e) { report.push(`❌ ${f.file_path}: ${e.message}`); }
+  }
+  return { success: ok === files.length, output: `批量写入 ${ok}/${files.length}\n` + report.join("\n"), data: { written: ok } };
+}
+function toolBatchEdit(workdir, args, ctx) {
+  const edits = Array.isArray((args || {}).edits) ? args.edits : [];
+  if (!edits.length) return { success: false, output: "edits 为空（需要 [{file_path, old_string, new_string}]）", data: null };
+  const report = [];
+  let ok = 0;
+  for (const e of edits) {
+    const full = resolvePath(workdir, (e && e.file_path) || "");
+    if (!fs.existsSync(full)) { report.push(`❌ ${e.file_path}: 文件不存在`); continue; }
+    let content; try { content = fs.readFileSync(full, "utf8"); } catch (ex) { report.push(`❌ ${e.file_path}: ${ex.message}`); continue; }
+    const oldString = (e && e.old_string) || "";
+    if (!oldString || !content.includes(oldString)) { report.push(`❌ ${e.file_path}: old_string 未找到（请先 read 获取精确内容）`); continue; }
+    const count = content.split(oldString).length - 1;
+    if (!e.replace_all && count > 1) { report.push(`❌ ${e.file_path}: old_string 出现 ${count} 次，请设置 replace_all=true 或提供更多上下文`); continue; }
+    try {
+      if (ctx && ctx.onUndo) recordUndo(workdir, "edit", e, ctx.onUndo);
+      const next = e.replace_all ? content.split(oldString).join(e.new_string || "") : content.replace(oldString, e.new_string || "");
+      fs.writeFileSync(full, next, "utf8");
+      ok++;
+      report.push(`✅ ${e.file_path}（${e.replace_all ? count : 1} 处）`);
+    } catch (ex) { report.push(`❌ ${e.file_path}: ${ex.message}`); }
+  }
+  return { success: ok === edits.length, output: `批量编辑 ${ok}/${edits.length}\n` + report.join("\n"), data: { edited: ok } };
+}
+/* ───────── 并行子智能体：独立上下文 + 全套工具并发执行，结论汇总回主循环 ───────── */
+async function toolSubagents(config, mode, workdir, args, onEvent, vision, onUndo, runId) {
+  const tasks = Array.isArray((args || {}).tasks) ? args.tasks.filter((t) => t && t.instruction).slice(0, 4) : [];
+  if (!tasks.length) return { success: false, output: "tasks 为空（需要 [{id, instruction}]，最多 4 个）", data: null };
+  const runOne = (t) => {
+    const subId = `s${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
+    const silent = () => {}; // 子智能体事件不直接上屏；其结论通过工具结果回传给主模型
+    return runAgentLoop(config, mode || "dsh", String(t.instruction || ""), [], workdir, silent, vision, onUndo, subId, { maxIter: 40 })
+      .then((r) => ({ id: t.id || "task", content: (r && r.content) || "", error: (r && r.error) || null }));
+  };
+  const results = await Promise.all(tasks.map(runOne));
+  const lines = results.map((r) => `## ${r.id}${r.error ? "（出错）" : ""}\n${r.error ? "ERROR: " + r.error : (r.content || "（空结果）")}`);
+  return { success: results.every((r) => !r.error), output: `✅ 子智能体完成 ${results.filter((r) => !r.error).length}/${tasks.length}\n\n` + lines.join("\n\n"), data: { tasks: results.length } };
+}
 function toolReadImage(workdir, args, visionCfg) {
   if (!visionCfg || !visionCfg.apiKey) return { success: false, output: "视觉引擎未配置（设置 → 视觉识别填写 API Key）", data: null };
   return analyzeImage(visionCfg, resolvePath(workdir, args.image_path || ""), null)
@@ -315,6 +411,8 @@ const VISION_DEFAULT_PROMPT = {
 function guessMime(p) { const e = path.extname(p).toLowerCase(); return { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp" }[e] || "image/png"; }
 async function analyzeImage(vision, imagePath, prompt) {
   if (!vision || !vision.apiKey) throw new Error("Vision API Key not configured.");
+  const vKey = cleanApiKey(vision.apiKey);
+  if (!vKey) throw new Error("Vision API Key 无效（为空或仅含空白/非 ASCII 字符），请在设置中重新粘贴。");
   const b64 = fs.readFileSync(imagePath).toString("base64");
   const dataUrl = `data:${guessMime(imagePath)};base64,${b64}`;
   const provider = vision.provider === "deepseek-ocr" ? "deepseek-ocr" : "modlens";
@@ -335,7 +433,7 @@ async function analyzeImage(vision, imagePath, prompt) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 180000);
   try {
-    const resp = await fetch(url, { method: "POST", headers: { "Authorization": `Bearer ${vision.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
+    const resp = await fetch(url, { method: "POST", headers: { "Authorization": `Bearer ${vKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
     if (!resp.ok) throw new Error(`Vision API error (${resp.status}): ${(await resp.text().catch(() => "")).slice(0, 300)}`);
     const json = await resp.json();
     const text = ((json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content) || "").trim();
@@ -361,6 +459,8 @@ function normalizeCall(call) {
   return { id: call.id, name: call.function.name, arguments: args };
 }
 async function deepseekChat(config, system, messages, tools, dbg) {
+  const apiKey = cleanApiKey(config.apiKey);
+  if (!apiKey) return { ok: false, error: "API Key 无效：为空或仅含空白/非 ASCII 字符（可能粘贴了错误内容）。请在设置中清空后，重新粘贴 sk- 开头的 DeepSeek API Key。" };
   const body = { model: config.model || "deepseek-chat", messages: [{ role: "system", content: system }, ...messages], stream: false, max_tokens: 16384, temperature: 0.7 };
   // 对齐官方 Tool Calls 指南：不传 tool_choice（默认即 auto），tools 仅在有工具时携带
   if (tools && tools.length) body.tools = tools;
@@ -371,8 +471,8 @@ async function deepseekChat(config, system, messages, tools, dbg) {
   const dbgDir = dbg && dbg.workdir ? path.join(dbg.workdir, ".deepking-debug") : null;
   const dbgWrite = (name, data) => { if (!dbgDir) return; try { fs.mkdirSync(dbgDir, { recursive: true }); fs.writeFileSync(path.join(dbgDir, name), JSON.stringify(data, null, 2), "utf8"); } catch (_) {} };
   try {
-    if (dbgDir) dbgWrite(`req-${Date.now()}.json`, { url, model: body.model, tools: body.tools ? body.tools.length : 0, messages: body.messages.map((m) => ({ role: m.role, content: (m.content || "").slice(0, 200), tool_calls: m.tool_calls ? m.tool_calls.length : 0 })) });
-    const resp = await fetch(url, { method: "POST", headers: { "Authorization": `Bearer ${config.apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
+    if (dbgDir) dbgWrite(`req-${Date.now()}.json`, { url, model: body.model, tools: body.tools ? body.tools.length : 0, messages: body.messages.map((m) => ({ role: m.role, content: (m.content || "").slice(0, 200), reasoning_content: m.reasoning_content !== undefined ? String(m.reasoning_content).slice(0, 80) : undefined, tool_calls: m.tool_calls ? m.tool_calls.length : 0 })) });
+    const resp = await fetch(url, { method: "POST", headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctrl.signal });
     const respText = await resp.text().catch(() => "");
     if (dbgDir) dbgWrite(`resp-${Date.now()}.json`, { status: resp.status, body: respText.slice(0, 200000) });
     if (!resp.ok) return { ok: false, error: `API error (${resp.status}): ${respText.slice(0, 400)}${dbgDir ? `（详见 ${dbgDir}）` : ""}` };
@@ -436,21 +536,23 @@ function parseDSMLToolCalls(text) {
   const out = [];
   if (!text) return out;
   text = String(text).split(DSML_PREFIX).join("");
-  if (!/<tool_calls>/.test(text)) return out;
-  const blocks = text.match(/<tool_calls>[\s\S]*?<\/tool_calls>/g) || [];
+  /* 真实 DSML 格式为 <｜DSML｜tag>（竖线+DSML 关键字+标签名），去掉竖线后是 <DSMLtag>；
+   * 所有标签正则都必须容忍可选 DSML 关键字，否则解析永远落空 */
+  if (!/<(?:DSML)?tool_calls>/.test(text)) return out;
+  const blocks = text.match(/<(?:DSML)?tool_calls>[\s\S]*?<\/(?:DSML)?tool_calls>/g) || [];
   for (const block of blocks) {
-    const invokes = block.match(/<invoke\s+name="([^"]+)"[^>]*>[\s\S]*?<\/invoke>/g) || [];
+    const invokes = block.match(/<(?:DSML)?invoke\s+name="([^"]+)"[^>]*>[\s\S]*?<\/(?:DSML)?invoke>/g) || [];
     for (const inv of invokes) {
-      const name = (inv.match(/<invoke\s+name="([^"]+)"/) || [])[1] || "";
+      const name = (inv.match(/<(?:DSML)?invoke\s+name="([^"]+)"/) || [])[1] || "";
       if (!name) continue;
       const args = {};
-      const params = inv.match(/<parameter\s+([^>]*)>([\s\S]*?)<\/parameter>/g) || [];
+      const params = inv.match(/<(?:DSML)?parameter\s+([^>]*)>([\s\S]*?)<\/(?:DSML)?parameter>/g) || [];
       for (const p of params) {
-        const head = (p.match(/<parameter\s+([^>]*)>/) || [])[1] || "";
+        const head = (p.match(/<(?:DSML)?parameter\s+([^>]*)>/) || [])[1] || "";
         const pname = (head.match(/name="([^"]+)"/) || [])[1] || "";
         if (!pname) continue;
         const isStr = /string="true"/.test(head);
-        let val = (p.match(/>([\s\S]*?)<\/parameter>/) || [])[1] || "";
+        let val = (p.match(/>([\s\S]*?)<\/(?:DSML)?parameter>/) || [])[1] || "";
         if (!isStr) { try { val = JSON.parse(val); } catch (_) {} } else { val = String(val); }
         args[pname] = val;
       }
@@ -484,31 +586,38 @@ function applyUndo(entries) {
 }
 
 /* ───────── Agent Loop（agent_loop.rs；max/工具开关 + 压缩 + 撤销日志） ───────── */
-async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent, vision, onUndo, runId) {
+async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent, vision, onUndo, runId, opts) {
   const persona = MODES[mode] || MODES.dsh;
   const useTools = config.tools !== false && config.max !== false;
-  const maxIter = 40; // 与循环内压缩配合：项目级分析一次最多 40 轮，上下文超阈值会自动摘要压缩
+  /* 0 = 不设步数上限：循环只会在模型给出结论（不再调用工具）或出错时结束；上下文超阈值自动摘要压缩 */
+  const maxIter = opts && opts.maxIter ? opts.maxIter : 0;
+  /* 原装引擎阶段附加（plan/skill/检查清单），对齐 DeepKing extra_preamble */
+  const system = (persona.system || "") + (opts && opts.preamble ? "\n\n" + opts.preamble : "");
   const com = compressHistory(history.filter((m) => m.role !== "system"));
-  let messages = com.history.map((m) => ({ role: m.role, content: m.content, tool_calls: m.tool_calls, tool_call_id: m.tool_call_id, name: m.name })).filter((m) => m.role !== "system");
+  let messages = com.history.map((m) => ({ role: m.role, content: m.content, reasoning_content: m.reasoning_content, tool_calls: m.tool_calls, tool_call_id: m.tool_call_id, name: m.name })).filter((m) => m.role !== "system");
   messages.push({ role: "user", content: userMessage });
-  let finalContent = "", toolCount = 0;
-  onEvent({ type: "started", max_iterations: maxIter, use_tools: useTools, run_id: runId });
+  let finalContent = "", finalReasoning = "", toolCount = 0;
+  onEvent({ type: "started", max_iterations: maxIter || null, use_tools: useTools, run_id: runId });
   if (com.compressed) onEvent({ type: "context_compressed", before_tokens: com.before, after_tokens: com.after });
   const schemas = useTools ? TOOL_SCHEMAS : null;
-  for (let iter = 0; iter < maxIter; iter++) {
-    onEvent({ type: "iteration", current: iter + 1, max: maxIter });
-    const resp = await deepseekChat(config, persona.system, messages, schemas, { workdir, runId });
-    if (!resp.ok) { onEvent({ type: "error", message: resp.error }); return; }
+  for (let iter = 0; maxIter === 0 || iter < maxIter; iter++) {
+    onEvent({ type: "iteration", current: iter + 1, max: maxIter || null });
+    const resp = await deepseekChat(config, system, messages, schemas, { workdir, runId });
+    if (!resp.ok) { onEvent({ type: "error", message: resp.error }); return { error: resp.error }; }
     const choice = resp.data.choices && resp.data.choices[0];
-    if (!choice) { onEvent({ type: "error", message: "无有效响应" }); return; }
+    if (!choice) { onEvent({ type: "error", message: "无有效响应" }); return { error: "无有效响应" }; }
     const msg = choice.message || {};
+    /* thinking 模式（deepseek-v4-pro 等）要求：assistant 消息的 reasoning_content 必须回传，否则 400 */
+    if (msg.reasoning_content !== undefined) finalReasoning = String(msg.reasoning_content);
     let calls = msg.tool_calls || [];
     const rawText = String(msg.content || "");
     /* DeepSeek 推理模型有时把工具调用以 DSML 文本写在 content（而非结构化字段）：
      * 解析成可执行调用，避免把 DSML 原文当作结论展示 */
     let dsmlParsed = false;
-    if (!calls.length && hasDSMLToolCalls(rawText)) {
-      const dsml = parseDSMLToolCalls(rawText);
+    /* DSML 工具调用可能被模型写进 content 或 reasoning_content（思考模式行为不一致），两处都解析 */
+    const dsmlSource = rawText + String(msg.reasoning_content || "");
+    if (!calls.length && hasDSMLToolCalls(dsmlSource)) {
+      const dsml = parseDSMLToolCalls(dsmlSource);
       if (dsml.length) { calls = dsml; dsmlParsed = true; }
     }
     finalContent = dsmlParsed ? "" : rawText;
@@ -518,23 +627,24 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
       const j = (v) => (typeof v === "string" ? v : JSON.stringify(v || {}));
       return { id: c.id, type: "function", function: { name, arguments: c.function ? j(c.function.arguments) : j(c.arguments) } };
     });
-    messages.push({ role: "assistant", content: apiCalls.length ? null : (rawText || null), tool_calls: apiCalls.length ? apiCalls : undefined });
-    if (!calls.length) { onEvent({ type: "done", content: finalContent, total_iterations: iter + 1, total_tool_calls: toolCount }); return; }
+    messages.push({ role: "assistant", content: apiCalls.length ? null : (rawText || null), reasoning_content: msg.reasoning_content !== undefined ? String(msg.reasoning_content) : undefined, tool_calls: apiCalls.length ? apiCalls : undefined });
+    if (!calls.length) { onEvent({ type: "done", content: finalContent, reasoning_content: finalReasoning || undefined, total_iterations: iter + 1, total_tool_calls: toolCount }); return { content: finalContent, reasoning_content: finalReasoning || undefined, iterations: iter + 1, tool_calls: toolCount }; }
     for (const raw of calls) {
       toolCount++;
       const call = raw.function ? normalizeCall(raw) : raw;
       onEvent({ type: "tool_call_requested", id: call.id, name: call.name, arguments: call.arguments });
       let result;
       if (call.name === "bash") result = await runBash(workdir, call.arguments.command || "", call.arguments.timeout_ms);
+      else if (call.name === "subagents") result = await toolSubagents(config, mode, workdir, call.arguments, onEvent, vision, onUndo, runId);
       else {
         // 写入类工具执行前记录撤销日志（撤回对话时整体回退）
         if (["write", "edit", "delete"].includes(call.name)) recordUndo(workdir, call.name, call.arguments, onUndo);
-        result = execTool(workdir, call.name, call.arguments, { vision }); if (result instanceof Promise) result = await result;
+        result = execTool(workdir, call.name, call.arguments, { vision, onUndo }); if (result instanceof Promise) result = await result;
       }
       const output = truncate(result.output || "", 3200);
       onEvent({ type: "tool_call_executed", id: call.id, name: call.name, success: result.success, output });
       messages.push({ role: "tool", tool_call_id: call.id, name: call.name, content: (result.success ? "" : "[ERROR] ") + output });
-      if (/^(write|edit|delete|bash)$/.test(call.name) && result.success) onEvent({ type: "file_changed", reason: call.name });
+      if (/^(write|edit|delete|bash|batch_write|batch_edit|subagents)$/.test(call.name) && result.success) onEvent({ type: "file_changed", reason: call.name });
     }
     /* 每轮结束后检查：上下文超阈值就把早期轮次摘要压缩，保留最近内容 */
     const compacted = compactInLoop(messages, LOOP_KEEP_BUDGET);
@@ -554,23 +664,26 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
     let sumText = "";
     /* 总结轮若仍出现 DSML 工具调用文本：执行后最多再要 2 次总结（bounded） */
     for (let sRetry = 0; sRetry < 3; sRetry++) {
-      const sum = await deepseekChat(config, persona.system, messages, null, { workdir, runId });
-      if (!sum.ok) { onEvent({ type: "error", message: sum.error }); return; }
+      const sum = await deepseekChat(config, system, messages, null, { workdir, runId });
+      if (!sum.ok) { onEvent({ type: "error", message: sum.error }); return { error: sum.error }; }
       const sm = sum.data.choices && sum.data.choices[0] ? (sum.data.choices[0].message || {}) : {};
+      if (sm.reasoning_content !== undefined) finalReasoning = String(sm.reasoning_content);
       sumText = String(sm.content || "");
-      if ((sm.tool_calls || []).length || !hasDSMLToolCalls(sumText)) break;
-      const dsml = parseDSMLToolCalls(sumText);
+      const smDsml = sumText + String(sm.reasoning_content || "");
+      if ((sm.tool_calls || []).length || !hasDSMLToolCalls(smDsml)) break;
+      const dsml = parseDSMLToolCalls(smDsml);
       if (!dsml.length) break;
-      messages.push({ role: "assistant", content: null, tool_calls: dsml.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: typeof c.arguments === "string" ? c.arguments : JSON.stringify(c.arguments) } })) });
+      messages.push({ role: "assistant", content: null, reasoning_content: sm.reasoning_content !== undefined ? String(sm.reasoning_content) : undefined, tool_calls: dsml.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: typeof c.arguments === "string" ? c.arguments : JSON.stringify(c.arguments) } })) });
       for (const raw of dsml) {
         toolCount++;
         const call = raw.function ? normalizeCall(raw) : raw;
         onEvent({ type: "tool_call_requested", id: call.id, name: call.name, arguments: call.arguments });
         let result;
         if (call.name === "bash") result = await runBash(workdir, call.arguments.command || "", call.arguments.timeout_ms);
+        else if (call.name === "subagents") result = await toolSubagents(config, mode, workdir, call.arguments, onEvent, vision, onUndo, runId);
         else {
           if (["write", "edit", "delete"].includes(call.name)) recordUndo(workdir, call.name, call.arguments, onUndo);
-          result = execTool(workdir, call.name, call.arguments, { vision }); if (result instanceof Promise) result = await result;
+          result = execTool(workdir, call.name, call.arguments, { vision, onUndo }); if (result instanceof Promise) result = await result;
         }
         const output = truncate(result.output || "", 3200);
         onEvent({ type: "tool_call_executed", id: call.id, name: call.name, success: result.success, output });
@@ -580,7 +693,139 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
     finalContent = sumText;
     if (finalContent && !/<tool_calls>/.test(finalContent)) onEvent({ type: "assistant_text", content: finalContent });
   }
-  onEvent({ type: "done", content: finalContent, total_iterations: maxIter, total_tool_calls: toolCount });
+  onEvent({ type: "done", content: finalContent, reasoning_content: finalReasoning || undefined, total_iterations: maxIter, total_tool_calls: toolCount });
+  return { content: finalContent, reasoning_content: finalReasoning || undefined, iterations: maxIter || 0, tool_calls: toolCount };
+}
+
+/* ───────── 原装工作流引擎（与 DeepKing src/ai/workflow/*.rs 同款编排） ─────────
+ * runPhase：一个"阶段" = 嵌套核心 Agent Loop；支持独立用户指令/系统附加/
+ * 步数上限；辅助阶段(echo=false)静默 started/done，只转发 text/tool/file 事件。
+ * runWorkflow：按模式编排阶段序列（规划→执行→审查），DeepSeek 唯一运行时。 */
+
+const KIMI_PLANNER_SYSTEM = `You are the planner of the Kimi Code CLI next-gen agent (MoonshotAI/kimi-code).
+Given a user task, produce a concise ONE-SHOT task plan in this structure — nothing else:
+【目标】one line
+【步骤】numbered list, each step verifiable with tools
+【验收标准】checklist to prove completion`;
+
+const QWEN_DESIGN_SYSTEM = `You are the design step of Qwen Code's /feat-dev skill (QwenLM/qwen-code).
+Given the task and the investigation summary, output:
+【设计文档】implementation plan: files to create/modify, responsibilities, data flow
+【测试计划】behavioral verification: what to run, expected results
+【验收标准】checklist
+Keep it concrete and minimal — Simplicity First: minimum code that solves the problem, nothing speculative.`;
+
+async function phaseTextCall(config, system, user, workdir, runId) {
+  const r = await deepseekChat(config, system, [{ role: "user", content: user }], null, { workdir, runId });
+  if (!r.ok) throw new Error(r.error);
+  const c = (r.data.choices && r.data.choices[0] && r.data.choices[0].message && r.data.choices[0].message.content) || "";
+  if (!String(c).trim()) throw new Error("规划阶段模型返回空内容");
+  return String(c);
+}
+
+/* 一个阶段：最大步数 0 = 无上限；userOverride 替换用户指令；preamble 附加系统尾部 */
+async function runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, opts) {
+  opts = opts || {};
+  const maxIter = opts.maxIter || 0;   // 0 = 无步数上限（沿用核心循环语义）
+  const echo = opts.echo !== false;    // 主阶段投射 started/done，辅助阶段静默
+  let finalContent = "", phaseIters = 0, phaseTools = 0;
+  const filter = (ev) => {
+    if (!echo && (ev.type === "started" || ev.type === "done")) return;
+    if (ev.type === "done") { finalContent = ev.content || ""; phaseIters = ev.total_iterations || 0; phaseTools = ev.total_tool_calls || 0; }
+    onEvent(ev);
+  };
+  let user = opts.user || null;
+  const ret = await runAgentLoop(config, mode, user, [], workdir, filter, vision, onUndo, runId, { maxIter, preamble: opts.preamble || null });
+  return { content: finalContent || (ret && ret.content) || "", iterations: phaseIters || (ret.iterations || 0), tool_calls: phaseTools || (ret.tool_calls || 0) };
+}
+
+/* 四种模式 → 原装工作流引擎（阶段序列与 DeepKing workflow/{kimi,qwen,glm}.rs 对齐） */
+async function runWorkflow(config, mode, userMessage, history, workdir, onEvent, vision, onUndo, runId, opts) {
+  if (mode === "dsh") return runAgentLoop(config, mode, userMessage, history, workdir, onEvent, vision, onUndo, runId, opts);
+
+  /* DSK：Kimi Code CLI 原装工作流 —— 任务规划 → 工具执行(无上限) → 塔式审查 */
+  if (mode === "dsk") {
+    const plan = await phaseTextCall(config, KIMI_PLANNER_SYSTEM, userMessage, workdir, runId);
+    onEvent({ type: "assistant_text", content: `📋 【DSK · Kimi 任务规划】\n${plan}\n` });
+    const exec = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+      maxIter: 0, echo: true,
+      preamble: `## 原装执行循环（kimi-code agent-core-v2）
+- 按任务规划逐步执行，先读再改；无步数上限：持续调用工具直到任务完成再给结论。
+【任务规划】
+${plan}`,
+    });
+    const tower = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+      maxIter: 25, echo: false,
+      user: `【塔式子智能体 · 审查塔】\n你是一个独立的审查子智能体（塔），拥有完整工具集。请对照【任务规划】与【验收标准】审查已完成的工作：\n1. 逐项核对验收标准，用工具重新读取实际文件内容（不要凭摘要判断）；\n2. 发现的问题直接修复（写文件工具可用）；\n3. 最后输出审查结论：已完成项 / 修复项 / 仍未满足项。\n\n【任务规划】\n${plan}`,
+    });
+    const content = tower.content || exec.content;
+    onEvent({ type: "done", content, total_iterations: exec.iterations + tower.iterations, total_tool_calls: exec.tool_calls + tower.tool_calls });
+    return { content, iterations: exec.iterations + tower.iterations, tool_calls: exec.tool_calls + tower.tool_calls };
+  }
+
+  /* DSQ：Qwen Code 原装工作流 —— 调研 → 设计+测试计划 → 实现(无上限) → 验证 → 自我审计 */
+  if (mode === "dsq") {
+    const invest = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+      maxIter: 12, echo: false,
+      user: `【调研阶段 · investigate】先摸清目标代码库（未开始任何修改）：1. glob 列项目结构，grep 定位入口/关键文件；2. 读取关键文件理解现有模式；3. 输出调研结论：入口点、关键文件、可复用模式、潜在风险。不要修改任何文件。`,
+    });
+    onEvent({ type: "assistant_text", content: `🔎 【DSQ · 调研结论】\n${invest.content}\n` });
+    const design = await phaseTextCall(config, QWEN_DESIGN_SYSTEM, `任务：\n${userMessage}\n\n调研结论：\n${invest.content}`, workdir, runId);
+    onEvent({ type: "assistant_text", content: `📐 【DSQ · 设计与测试计划】\n${design}\n` });
+    const implement = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+      maxIter: 0, echo: true,
+      preamble: `## Qwen Code 原装实现纪律（Simplicity First）
+- 最小代码解决当前问题，不做投机性扩展、不为单次使用做抽象；
+- 不提供未被要求的功能/配置；不为不可能场景写错误处理；
+- 若写了 200 行而 50 行能完成，请重写；完成后进行构建/类型检查。
+【设计文档】
+${design}`,
+    });
+    let verify = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+      maxIter: 15, echo: false,
+      user: `【验证阶段 · verify】基于实现结果进行行为验证：1. 找到测试/构建入口用 bash 运行；2. 失败 → 读报错 → 修复 → 重跑；3. 重复直到通过或连续两次失败（两次失败则换方案并说明）。最后输出：运行了什么、结果如何、遗留问题。`,
+    });
+    const FAIL = ["失败", "FAIL", "FAILED", "error", "Error", "未通过", "不通过", "failing"];
+    if (FAIL.some((k) => verify.content.includes(k))) {
+      verify = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+        maxIter: 15, echo: false,
+        user: `【验证阶段 · verify】上一轮验证仍有失败项，继续修复至全部通过。`,
+      });
+    }
+    const audit = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+      maxIter: 15, echo: false,
+      user: `【自我审计 · self-audit】按 Qwen Code 规则审计本次全部变更（读完整 diff 通读）：1. 逐项核对测试计划与验收标准；2. 审查每个改动与每条绿色测试证据时预设它可能是错的（通过≠正确）；3. 直到连续两次干净通过（clean pass）；4. 第二轮仍无收敛（共约五轮）则如实说明；5. 发现问题即修复并重跑。最后输出审计结论与交付摘要。`,
+    });
+    const content = audit.content || implement.content;
+    const iters = invest.iterations + implement.iterations + verify.iterations + audit.iterations;
+    const tools = invest.tool_calls + implement.tool_calls + verify.tool_calls + audit.tool_calls;
+    onEvent({ type: "done", content, total_iterations: iters, total_tool_calls: tools });
+    return { content, iterations: iters, tool_calls: tools };
+  }
+
+  /* DSG：GLM-5 原装 Agentic Engineering —— 全局视角 → 工程化循环(无上限+自审) → 关键思维终审 */
+  const scan = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+    maxIter: 10, echo: false,
+    user: `【全局视角 · Global Scan】在修改任何东西之前建立代码库地图：1. glob 全项目结构，grep 任务关键词定位边界；2. 读取入口与关键路径（read 分块）；3. 输出：模块边界、调用链、改动影响面、边界与错误语义清单。不要修改文件。`,
+  });
+  onEvent({ type: "assistant_text", content: `🗺️ 【DSG · 全局视角】\n${scan.content}\n` });
+  const main = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+    maxIter: 0, echo: true,
+    preamble: `## GLM-5 原装 Agentic Engineering 循环（zai-org/GLM-5）
+1. 读(Read) → 析(Analyze) → 应(Respond)：每次动手前先读取最新真实内容，绝不凭记忆改文件；
+2. 长程自我优化：每完成约 5 轮，主动审视自身推理与已选策略并动态调整；
+3. 全局视角优先：修改共享函数前先 grep 全部使用点；处理边界情况并明确错误语义；
+4. 无步数上限：在数百轮迭代、数千次工具调用中持续优化，直到验收标准通过再给结论。`,
+  });
+  const review = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+    maxIter: 20, echo: false,
+    user: `【关键思维终审 · Critical Thinking Review】对本次工程化循环的最终产物做关键思维终审：1. 对照验收标准逐项核验（用工具重新读取实际改动内容）；2. 构造反例：边界输入、并发/时序、错误路径、发布后回退；3. 修复发现的问题并复验一次；4. 输出结构化最终交付：改动清单（文件:摘要）、验证证据、遗留风险与建议。`,
+  });
+  const content = review.content || main.content;
+  const iters = scan.iterations + main.iterations + review.iterations;
+  const tools = scan.tool_calls + main.tool_calls + review.tool_calls;
+  onEvent({ type: "done", content, total_iterations: iters, total_tool_calls: tools });
+  return { content, iterations: iters, tool_calls: tools };
 }
 
 /* ───────── 多模态流程：识图 → 结合问题发送 ───────── */
@@ -642,12 +887,12 @@ function handleRpc(req, res, cors) {
     logs[runId] = [];
     const p = msg.type === "multimodal"
       ? handleMultimodal(cfg, vision, msg.dataUrl, msg.mime, msg.prompt, workdir, emit, (e) => logs[runId].push(e), runId)
-      : runAgentLoop(cfg, msg.mode || "dsh", msg.content || "", msg.history || [], workdir, emit, vision, (e) => logs[runId].push(e), runId);
+      : runWorkflow(cfg, msg.mode || "dsh", msg.content || "", msg.history || [], workdir, emit, vision, (e) => logs[runId].push(e), runId);
     p.then(() => { res.writeHead(200, { ...cors, "Content-Type": "application/json" }); res.end(JSON.stringify({ events })); });
   });
 }
 
-module.exports = { runAgentLoop, handleMultimodal, analyzeImage, saveTempImage, MODES, TOOL_SCHEMAS, startServer, runBash, execTool, compressHistory, applyUndo };
+module.exports = { runAgentLoop, runWorkflow, handleMultimodal, analyzeImage, saveTempImage, MODES, TOOL_SCHEMAS, startServer, runBash, execTool, compressHistory, applyUndo };
 
 if (require.main === module) {
   const portArg = process.argv.indexOf("--port");

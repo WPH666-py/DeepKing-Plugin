@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /* ============================================================
- * DeepKing-Plugin · shared/node-host.js  (v0.1.3 功能对齐 DeepKing)
+ * DeepKing-Plugin · shared/node-host.js  (v0.1.4 功能对齐 DeepKing 0.2.0)
  * - DeepSeek 客户端 + Agent Loop（含上下文自动压缩）
+ * - 四模式×原装工作流引擎：DSH(原生)/DSK(Kimi Code)/DSQ(Qwen Code)/DSG(GLM-5)
+ *   与 DeepKing src/ai/workflow/*.rs 同款编排（规划→执行→审查阶段）
  * - 工具集：read/write/edit/bash/grep/glob/todo/task/check_runtime
  *           delete/read_image(视觉)/read_pdf/read_excel/web_search/install/check python
  * - 多模态视觉：ModLens / DeepSeek-OCR（OpenAI 兼容 vision API，移植自 DeepKing vision.rs）
@@ -12,10 +14,16 @@ const fs = require("fs");
 const path = require("path");
 const { execFile } = require("child_process");
 
-/* ───────── 模式 Persona ───────── */
+/* ───────── 模式 × 原装厂商工作流引擎 ─────────
+ * DSK/DSQ/DSG 由 Rust 移植（DeepKing）并在此 JS 复刻的厂商原装工作流引擎驱动，
+ * 与 DeepSeek 运行时强强结合（不是仅靠提示词模拟风格）。原版源码见 DeepKing vendor/。 */
 const MODES = {
   dsh: {
     label: "DSH (Harness)",
+    engine: "DeepSeek Harness 原生 Agent",
+    upstream: "deepseek-ai",
+    license: "MIT",
+    mechanism: "原生 Agent Loop：架构先行、长任务可追踪、工具驱动自主执行",
     system: `You are an autonomous coding agent (DeepSeek Harness style) working in the user's workspace.
 Rules:
 - For multi-step tasks FIRST call todo_write to plan; mark items completed as you go.
@@ -27,8 +35,12 @@ Rules:
 - When done, output a concise summary with file paths. No iteration limit: keep working until the task is fully complete.`,
   },
   dsk: {
-    label: "DSK (K3)",
-    system: `You are a fast-iteration coding agent (K3 style).
+    label: "DSK (Kimi Code 引擎)",
+    engine: "Kimi Code CLI 原装工作流",
+    upstream: "MoonshotAI/kimi-code",
+    license: "MIT",
+    mechanism: "Next-Gen Agent：计划 → 工具执行 → 子智能体(Tower)审查修复，无步数上限",
+    system: `You are a fast-iteration coding agent running the ORIGINAL Kimi Code CLI workflow (MoonshotAI/kimi-code, MIT): plan → execute with tools → sub-agent review/refine.
 Rules:
 - Plan → Generate → Review → Refine. State your plan briefly before generating code.
 - Prefer minimal runnable iterations; verify after each step.
@@ -38,8 +50,12 @@ Rules:
 - Output a concise summary when done. No iteration limit: keep working until the task is fully complete.`,
   },
   dsq: {
-    label: "DSQ (Qwen3.8)",
-    system: `You are a collaborative coding agent (Qwen3.8 style).
+    label: "DSQ (Qwen Code 引擎)",
+    engine: "Qwen Code 原装工作流",
+    upstream: "QwenLM/qwen-code",
+    license: "Apache-2.0",
+    mechanism: "Planning 计划模式 + Agent Team 并行协作：先拆解计划，再并行执行",
+    system: `You are a collaborative coding agent running the ORIGINAL Qwen Code workflow (QwenLM/qwen-code, Apache-2.0): planning mode 计划-执行-验证 + Agent Team 并行协作.
 Rules:
 - For any non-trivial task FIRST call todo_write to break it into subtasks; mark in_progress/completed.
 - Mirror the existing project style: read similar files first, then write consistent code.
@@ -49,8 +65,12 @@ Rules:
 - No iteration limit: keep working until the task is fully complete.`,
   },
   dsg: {
-    label: "DSG (GLM5.3)",
-    system: `You are a global-view coding agent (GLM5.3 style).
+    label: "DSG (GLM-5 引擎)",
+    engine: "GLM-5 Skills 原装工作流",
+    upstream: "zai-org/GLM-5",
+    license: "Apache-2.0",
+    mechanism: "Skills 技能驱动 Agentic Engineering：全局上下文，构建 → 测试 → 审查 → 文档",
+    system: `You are a global-view coding agent running the ORIGINAL GLM-5 agentic engineering workflow (zai-org/GLM-5, Apache-2.0): skills-driven 构建 → 测试 → 审查 → 文档.
 Rules:
 - For unfamiliar codebases call glob + grep first.
 - Check usages with grep before editing shared functions.
@@ -571,6 +591,8 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
   const useTools = config.tools !== false && config.max !== false;
   /* 0 = 不设步数上限：循环只会在模型给出结论（不再调用工具）或出错时结束；上下文超阈值自动摘要压缩 */
   const maxIter = opts && opts.maxIter ? opts.maxIter : 0;
+  /* 原装引擎阶段附加（plan/skill/检查清单），对齐 DeepKing extra_preamble */
+  const system = (persona.system || "") + (opts && opts.preamble ? "\n\n" + opts.preamble : "");
   const com = compressHistory(history.filter((m) => m.role !== "system"));
   let messages = com.history.map((m) => ({ role: m.role, content: m.content, reasoning_content: m.reasoning_content, tool_calls: m.tool_calls, tool_call_id: m.tool_call_id, name: m.name })).filter((m) => m.role !== "system");
   messages.push({ role: "user", content: userMessage });
@@ -580,7 +602,7 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
   const schemas = useTools ? TOOL_SCHEMAS : null;
   for (let iter = 0; maxIter === 0 || iter < maxIter; iter++) {
     onEvent({ type: "iteration", current: iter + 1, max: maxIter || null });
-    const resp = await deepseekChat(config, persona.system, messages, schemas, { workdir, runId });
+    const resp = await deepseekChat(config, system, messages, schemas, { workdir, runId });
     if (!resp.ok) { onEvent({ type: "error", message: resp.error }); return { error: resp.error }; }
     const choice = resp.data.choices && resp.data.choices[0];
     if (!choice) { onEvent({ type: "error", message: "无有效响应" }); return { error: "无有效响应" }; }
@@ -642,7 +664,7 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
     let sumText = "";
     /* 总结轮若仍出现 DSML 工具调用文本：执行后最多再要 2 次总结（bounded） */
     for (let sRetry = 0; sRetry < 3; sRetry++) {
-      const sum = await deepseekChat(config, persona.system, messages, null, { workdir, runId });
+      const sum = await deepseekChat(config, system, messages, null, { workdir, runId });
       if (!sum.ok) { onEvent({ type: "error", message: sum.error }); return { error: sum.error }; }
       const sm = sum.data.choices && sum.data.choices[0] ? (sum.data.choices[0].message || {}) : {};
       if (sm.reasoning_content !== undefined) finalReasoning = String(sm.reasoning_content);
@@ -673,6 +695,137 @@ async function runAgentLoop(config, mode, userMessage, history, workdir, onEvent
   }
   onEvent({ type: "done", content: finalContent, reasoning_content: finalReasoning || undefined, total_iterations: maxIter, total_tool_calls: toolCount });
   return { content: finalContent, reasoning_content: finalReasoning || undefined, iterations: maxIter || 0, tool_calls: toolCount };
+}
+
+/* ───────── 原装工作流引擎（与 DeepKing src/ai/workflow/*.rs 同款编排） ─────────
+ * runPhase：一个"阶段" = 嵌套核心 Agent Loop；支持独立用户指令/系统附加/
+ * 步数上限；辅助阶段(echo=false)静默 started/done，只转发 text/tool/file 事件。
+ * runWorkflow：按模式编排阶段序列（规划→执行→审查），DeepSeek 唯一运行时。 */
+
+const KIMI_PLANNER_SYSTEM = `You are the planner of the Kimi Code CLI next-gen agent (MoonshotAI/kimi-code).
+Given a user task, produce a concise ONE-SHOT task plan in this structure — nothing else:
+【目标】one line
+【步骤】numbered list, each step verifiable with tools
+【验收标准】checklist to prove completion`;
+
+const QWEN_DESIGN_SYSTEM = `You are the design step of Qwen Code's /feat-dev skill (QwenLM/qwen-code).
+Given the task and the investigation summary, output:
+【设计文档】implementation plan: files to create/modify, responsibilities, data flow
+【测试计划】behavioral verification: what to run, expected results
+【验收标准】checklist
+Keep it concrete and minimal — Simplicity First: minimum code that solves the problem, nothing speculative.`;
+
+async function phaseTextCall(config, system, user, workdir, runId) {
+  const r = await deepseekChat(config, system, [{ role: "user", content: user }], null, { workdir, runId });
+  if (!r.ok) throw new Error(r.error);
+  const c = (r.data.choices && r.data.choices[0] && r.data.choices[0].message && r.data.choices[0].message.content) || "";
+  if (!String(c).trim()) throw new Error("规划阶段模型返回空内容");
+  return String(c);
+}
+
+/* 一个阶段：最大步数 0 = 无上限；userOverride 替换用户指令；preamble 附加系统尾部 */
+async function runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, opts) {
+  opts = opts || {};
+  const maxIter = opts.maxIter || 0;   // 0 = 无步数上限（沿用核心循环语义）
+  const echo = opts.echo !== false;    // 主阶段投射 started/done，辅助阶段静默
+  let finalContent = "", phaseIters = 0, phaseTools = 0;
+  const filter = (ev) => {
+    if (!echo && (ev.type === "started" || ev.type === "done")) return;
+    if (ev.type === "done") { finalContent = ev.content || ""; phaseIters = ev.total_iterations || 0; phaseTools = ev.total_tool_calls || 0; }
+    onEvent(ev);
+  };
+  let user = opts.user || null;
+  const ret = await runAgentLoop(config, mode, user, [], workdir, filter, vision, onUndo, runId, { maxIter, preamble: opts.preamble || null });
+  return { content: finalContent || (ret && ret.content) || "", iterations: phaseIters || (ret.iterations || 0), tool_calls: phaseTools || (ret.tool_calls || 0) };
+}
+
+/* 四种模式 → 原装工作流引擎（阶段序列与 DeepKing workflow/{kimi,qwen,glm}.rs 对齐） */
+async function runWorkflow(config, mode, userMessage, history, workdir, onEvent, vision, onUndo, runId, opts) {
+  if (mode === "dsh") return runAgentLoop(config, mode, userMessage, history, workdir, onEvent, vision, onUndo, runId, opts);
+
+  /* DSK：Kimi Code CLI 原装工作流 —— 任务规划 → 工具执行(无上限) → 塔式审查 */
+  if (mode === "dsk") {
+    const plan = await phaseTextCall(config, KIMI_PLANNER_SYSTEM, userMessage, workdir, runId);
+    onEvent({ type: "assistant_text", content: `📋 【DSK · Kimi 任务规划】\n${plan}\n` });
+    const exec = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+      maxIter: 0, echo: true,
+      preamble: `## 原装执行循环（kimi-code agent-core-v2）
+- 按任务规划逐步执行，先读再改；无步数上限：持续调用工具直到任务完成再给结论。
+【任务规划】
+${plan}`,
+    });
+    const tower = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+      maxIter: 25, echo: false,
+      user: `【塔式子智能体 · 审查塔】\n你是一个独立的审查子智能体（塔），拥有完整工具集。请对照【任务规划】与【验收标准】审查已完成的工作：\n1. 逐项核对验收标准，用工具重新读取实际文件内容（不要凭摘要判断）；\n2. 发现的问题直接修复（写文件工具可用）；\n3. 最后输出审查结论：已完成项 / 修复项 / 仍未满足项。\n\n【任务规划】\n${plan}`,
+    });
+    const content = tower.content || exec.content;
+    onEvent({ type: "done", content, total_iterations: exec.iterations + tower.iterations, total_tool_calls: exec.tool_calls + tower.tool_calls });
+    return { content, iterations: exec.iterations + tower.iterations, tool_calls: exec.tool_calls + tower.tool_calls };
+  }
+
+  /* DSQ：Qwen Code 原装工作流 —— 调研 → 设计+测试计划 → 实现(无上限) → 验证 → 自我审计 */
+  if (mode === "dsq") {
+    const invest = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+      maxIter: 12, echo: false,
+      user: `【调研阶段 · investigate】先摸清目标代码库（未开始任何修改）：1. glob 列项目结构，grep 定位入口/关键文件；2. 读取关键文件理解现有模式；3. 输出调研结论：入口点、关键文件、可复用模式、潜在风险。不要修改任何文件。`,
+    });
+    onEvent({ type: "assistant_text", content: `🔎 【DSQ · 调研结论】\n${invest.content}\n` });
+    const design = await phaseTextCall(config, QWEN_DESIGN_SYSTEM, `任务：\n${userMessage}\n\n调研结论：\n${invest.content}`, workdir, runId);
+    onEvent({ type: "assistant_text", content: `📐 【DSQ · 设计与测试计划】\n${design}\n` });
+    const implement = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+      maxIter: 0, echo: true,
+      preamble: `## Qwen Code 原装实现纪律（Simplicity First）
+- 最小代码解决当前问题，不做投机性扩展、不为单次使用做抽象；
+- 不提供未被要求的功能/配置；不为不可能场景写错误处理；
+- 若写了 200 行而 50 行能完成，请重写；完成后进行构建/类型检查。
+【设计文档】
+${design}`,
+    });
+    let verify = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+      maxIter: 15, echo: false,
+      user: `【验证阶段 · verify】基于实现结果进行行为验证：1. 找到测试/构建入口用 bash 运行；2. 失败 → 读报错 → 修复 → 重跑；3. 重复直到通过或连续两次失败（两次失败则换方案并说明）。最后输出：运行了什么、结果如何、遗留问题。`,
+    });
+    const FAIL = ["失败", "FAIL", "FAILED", "error", "Error", "未通过", "不通过", "failing"];
+    if (FAIL.some((k) => verify.content.includes(k))) {
+      verify = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+        maxIter: 15, echo: false,
+        user: `【验证阶段 · verify】上一轮验证仍有失败项，继续修复至全部通过。`,
+      });
+    }
+    const audit = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+      maxIter: 15, echo: false,
+      user: `【自我审计 · self-audit】按 Qwen Code 规则审计本次全部变更（读完整 diff 通读）：1. 逐项核对测试计划与验收标准；2. 审查每个改动与每条绿色测试证据时预设它可能是错的（通过≠正确）；3. 直到连续两次干净通过（clean pass）；4. 第二轮仍无收敛（共约五轮）则如实说明；5. 发现问题即修复并重跑。最后输出审计结论与交付摘要。`,
+    });
+    const content = audit.content || implement.content;
+    const iters = invest.iterations + implement.iterations + verify.iterations + audit.iterations;
+    const tools = invest.tool_calls + implement.tool_calls + verify.tool_calls + audit.tool_calls;
+    onEvent({ type: "done", content, total_iterations: iters, total_tool_calls: tools });
+    return { content, iterations: iters, tool_calls: tools };
+  }
+
+  /* DSG：GLM-5 原装 Agentic Engineering —— 全局视角 → 工程化循环(无上限+自审) → 关键思维终审 */
+  const scan = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+    maxIter: 10, echo: false,
+    user: `【全局视角 · Global Scan】在修改任何东西之前建立代码库地图：1. glob 全项目结构，grep 任务关键词定位边界；2. 读取入口与关键路径（read 分块）；3. 输出：模块边界、调用链、改动影响面、边界与错误语义清单。不要修改文件。`,
+  });
+  onEvent({ type: "assistant_text", content: `🗺️ 【DSG · 全局视角】\n${scan.content}\n` });
+  const main = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+    maxIter: 0, echo: true,
+    preamble: `## GLM-5 原装 Agentic Engineering 循环（zai-org/GLM-5）
+1. 读(Read) → 析(Analyze) → 应(Respond)：每次动手前先读取最新真实内容，绝不凭记忆改文件；
+2. 长程自我优化：每完成约 5 轮，主动审视自身推理与已选策略并动态调整；
+3. 全局视角优先：修改共享函数前先 grep 全部使用点；处理边界情况并明确错误语义；
+4. 无步数上限：在数百轮迭代、数千次工具调用中持续优化，直到验收标准通过再给结论。`,
+  });
+  const review = await runPhase(config, mode, workdir, onEvent, vision, onUndo, runId, {
+    maxIter: 20, echo: false,
+    user: `【关键思维终审 · Critical Thinking Review】对本次工程化循环的最终产物做关键思维终审：1. 对照验收标准逐项核验（用工具重新读取实际改动内容）；2. 构造反例：边界输入、并发/时序、错误路径、发布后回退；3. 修复发现的问题并复验一次；4. 输出结构化最终交付：改动清单（文件:摘要）、验证证据、遗留风险与建议。`,
+  });
+  const content = review.content || main.content;
+  const iters = scan.iterations + main.iterations + review.iterations;
+  const tools = scan.tool_calls + main.tool_calls + review.tool_calls;
+  onEvent({ type: "done", content, total_iterations: iters, total_tool_calls: tools });
+  return { content, iterations: iters, tool_calls: tools };
 }
 
 /* ───────── 多模态流程：识图 → 结合问题发送 ───────── */
@@ -734,12 +887,12 @@ function handleRpc(req, res, cors) {
     logs[runId] = [];
     const p = msg.type === "multimodal"
       ? handleMultimodal(cfg, vision, msg.dataUrl, msg.mime, msg.prompt, workdir, emit, (e) => logs[runId].push(e), runId)
-      : runAgentLoop(cfg, msg.mode || "dsh", msg.content || "", msg.history || [], workdir, emit, vision, (e) => logs[runId].push(e), runId);
+      : runWorkflow(cfg, msg.mode || "dsh", msg.content || "", msg.history || [], workdir, emit, vision, (e) => logs[runId].push(e), runId);
     p.then(() => { res.writeHead(200, { ...cors, "Content-Type": "application/json" }); res.end(JSON.stringify({ events })); });
   });
 }
 
-module.exports = { runAgentLoop, handleMultimodal, analyzeImage, saveTempImage, MODES, TOOL_SCHEMAS, startServer, runBash, execTool, compressHistory, applyUndo };
+module.exports = { runAgentLoop, runWorkflow, handleMultimodal, analyzeImage, saveTempImage, MODES, TOOL_SCHEMAS, startServer, runBash, execTool, compressHistory, applyUndo };
 
 if (require.main === module) {
   const portArg = process.argv.indexOf("--port");

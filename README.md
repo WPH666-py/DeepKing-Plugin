@@ -1,6 +1,6 @@
 # DeepKing-Plugin（DeepKing 插件版）
 
-把 **DeepKing** 的多模态 Agentic IDE **AI 助手**（DeepSeek 对话 × 多模式 Persona × 工具 Agent Loop）
+把 **DeepKing** 的多模态 Agentic IDE **AI 助手**（DeepSeek 对话 × 四模式原装工作流引擎 × 工具 Agent Loop）
 以侧边栏形式带进主流 IDE —— 就像 Claude Code 在 VSCode 里一样。**DeepKing 本体代码零改动**，本仓库为独立插件。
 
 ![DeepKing](icon/deepking.png)
@@ -16,7 +16,7 @@ DeepKing 的 AI 助手 = 前端对话 UI + 后端三件套（`deepseek.rs` 客�
 | `ai/deepseek.rs`（chat + tools、300s 超时） | `shared/node-host.js` `deepseekChat()`（fetch，AbortController 300s） |
 | `ai/tools.rs`（15 个工具 schema + 执行） | `shared/node-host.js` 核心工具集：read / write / edit / bash / grep / glob / todo_write / task / check_runtime（危险命令拦截、超时、路径规范化同源） |
 | `ai/agent_loop.rs`（迭代上限、工具结果回灌） | `runAgentLoop()`（迭代上限 25、工具结果 [ERROR] 前缀回灌、输出截断） |
-| `personas/` 四模式 | `MODES`（DSH/DSK/DSQ/DSG 精简版系统提示词） |
+| `personas/` 四模式 | `MODES`（DSH/DSK/DSQ/DSG：DSK=Kimi Code 引擎 / DSQ=Qwen Code 引擎 / DSG=GLM-5 引擎，引擎语义与 DeepKing `workflow/*.rs` 对齐） |
 | Vue 聊天界面 | `shared/webview/`（原生 JS 单页：消息/工具卡片/Markdown 渲染/设置） |
 
 **同一份核心，三种挂载方式**（这就是"支持多个 IDE 侧边栏"的原因）：
@@ -45,7 +45,7 @@ DeepKing-Plugin/
 
 - 💬 侧边栏 Webview 聊天（Enter 发送、Markdown 渲染、系统提示）
 - 🛠 Agent Loop：工具调用实时卡片（参数/结果可展开），写文件后自动提示
-- 🌓 四模式 Persona：DSH / DSK / DSQ / DSG
+- 🌓 四模式原装工作流引擎：DSH（DeepSeek Harness 原生）/ DSK（Kimi Code CLI）/ DSQ（Qwen Code）/ DSG（GLM-5），与 DeepKing `src/ai/workflow/*.rs` 对齐，均走 DeepSeek Token
 - ⚙ 配置：API Key / Base URL / 模型 / 工作目录（VSCode 存 globalState；JetBrains/浏览器存本地）
 - 🔒 安全：危险命令模式拦截、命令超时（30s）、API 请求超时（300s）、路径规范化
 - 🐳 图标 = DeepKing.ico（活动栏/市场/工具栏均为 DeepKing）
@@ -57,7 +57,7 @@ DeepKing-Plugin/
 ```bash
 # 方式 1：直接安装（本地打包）
 cd vscode && npx @vscode/vsce package
-code --install-extension ./deepking-plugin-0.1.3.vsix
+code --install-extension ./deepking-plugin-0.1.4.vsix
 
 # 方式 2：开发调试（F5 自动开 Extension Development Host）
 # 在 vscode/ 内 code . 打开仓库，按 F5
@@ -69,7 +69,7 @@ code --install-extension ./deepking-plugin-0.1.3.vsix
 
 ```bash
 cd jetbrains
-./gradlew buildPlugin   # 产物: build/distributions/deepking-plugin-0.1.3.zip
+./gradlew buildPlugin   # 产物: build/distributions/deepking-plugin-0.1.4.zip
 # IDE → Settings → Plugins → ⚙ → Install Plugin from Disk → 选择 zip，重启
 ```
 
@@ -82,11 +82,12 @@ node shared/node-host.js --port 8787
 # 浏览器打开 http://127.0.0.1:8787 （如远程服务器，配合反向代理）
 ```
 
-## 四、端口对照（DeepKing 原版能力 → 插件 v0.1.0）
+## 四、端口对照（DeepKing 原版能力 → 插件 v0.1.4）
 
 | 能力 | DeepKing | 插件版 |
 |---|---|---|
 | DeepSeek 对话 + 工具循环 | ✅ | ✅ |
+| 四模式原装工作流引擎（DSK/DSQ/DSG） | ✅（Rust `workflow/*.rs`） | ✅（`MODES` 引擎语义对齐） |
 | read/write/edit/bash/grep/glob | ✅ | ✅ |
 | todo/task/check_runtime | ✅ | ✅ |
 | 视觉识图 / PDF / Excel 上下文 | ✅ | v1 占位（可用 bash+python 兜底） |
