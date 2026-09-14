@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""生成 Deepseek-Skin-Suit17 仓库。
+"""生成 Deepseek-Skin-Suit21 仓库。
 
-模板: _suit17-src/tpl/(取自 Suit12 的"单张样式"套件)
+模板: _suit20-src/tpl/(取自 Suit12 的"单张样式"套件)
 特点: IMAGE_FILES 只有 1 张素材 -> grid = 全屏单图(cover), single1 = 卡片单图。
-脚本与文档都按 Suit17 显式写出(不再靠对上一套做链式替换, 避免文案串味)。
+脚本与文档都按 Suit21 显式写出(不再靠对上一套做链式替换, 避免文案串味)。
 
-用法: python _suit17-src/gen_suit17.py
-产物: D:\\projects-py\\DeepKing-Plugin\\Deepseek-Skin-Suit17
+用法: python _suit21-src/gen_suit21.py
+产物: D:\\projects-py\\DeepKing-Plugin\\Deepseek-Skin-Suit20
 """
 import os
 import shutil
@@ -15,16 +15,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 TPL = os.path.join(HERE, "tpl")
 SRC = HERE
-DST = os.path.join(ROOT, "Deepseek-Skin-Suit17")
+DST = os.path.join(ROOT, "Deepseek-Skin-Suit21")
 
-NUM = "17"
-ASSET_SRC = "img1-quad.jpg"          # 素材源(四格拼图, 960x960)
-ASSET_DST = "01-quad.jpg"            # 仓库内文件名
-ASSET_STEM = "01-quad"
-WALLPAPER_NAME = "鲸鱼四连(2×2 四格)"
-PET_NAME = "鲸鱼娘"
-# 桌宠: 四格拼图里取左上"胆孝"那一格(方形取景, 角色居中且不带格线)
-PET_CROP = (0.26, 0.26, 0.18)        # (中心x比例, 中心y比例, 半边长占最短边比例)
+NUM = "21"
+ASSET_SRC = "img1-ginkgo.jpg"        # 素材源(银杏银饰特写, 1104x637 = 16:9)
+ASSET_DST = "01-ginkgo.jpg"          # 仓库内文件名
+ASSET_STEM = "01-ginkgo"
+WALLPAPER_NAME = "银杏银饰(16:9 宽幅)"
+PET_NAME = "青羽"
+# 桌宠: 取人物区域(方形取景; 特写插画无白底可抠)
+PET_CROP = (0.47, 0.50, 0.44)        # (中心x比例, 中心y比例, 半边长占最短边比例)
 BG_TOL = 26
 BG_BRIGHT = 168
 
@@ -74,7 +74,7 @@ def _fit_gradient(size, top=(248, 251, 255), bottom=(226, 238, 252)):
 def compose_fit(size=(1920, 1080)):
     """整张完整显示(contain)+ 渐变底 + 圆角阴影。
 
-    方形/竖版素材在 16:9 屏幕上 cover 会裁掉约 22% 的高度, 四格文案会被切;
+    方形/竖版素材在 16:9 屏幕上 cover 会裁掉约 22% 的高度, 大字会被切;
     这个模式保证整张素材都在画面内。
     """
     ensure_pillow()
@@ -120,14 +120,14 @@ def gen_skin_core():
         ('IMAGE_NAMES = [\n    "漂在水中",\n]',
          'IMAGE_NAMES = [\n    "%s",\n]' % WALLPAPER_NAME),
         ("# 单张样式: grid = 全屏单图铺满(cover), single1 = 模糊填充卡片单图",
-         "# 单张样式。素材是 1:1 方形, 在 16:9 屏上 cover 会裁掉上下各约 22%(四格文案会被切),\n"
-         "# 因此默认 grid = 完整卡片(适合屏幕), single1 = 全屏铺满(cover)。\n"
-         "# 想换回 Suit12 那种默认, 把 GRID_FIT 改成 False 即可。"),
+         "# 单张样式: 素材 1104x637 与屏幕同形, grid = cover 铺满(几乎不裁切),\n"
+         "# single1 = 卡片单图(模糊填充 + 圆角卡片)。\n"
+         "# 想改成整张不裁切的完整卡片: 把 GRID_FIT 改成 True。"),
         ("MODES = [(\"grid\", \"全屏单图(默认)\"), (\"single1\", \"卡片单图\")]",
-         "GRID_FIT = True  # True: grid=完整卡片(不裁切); False: grid=全屏单图(cover)\n"
+         "GRID_FIT = False  # False: grid=全屏铺满(cover; 本套素材同形几乎不裁切)\n"
          "MODES = [\n"
-         "    (\"grid\", \"完整单图(默认, 不裁切)\"),\n"
-         "    (\"single1\", \"全屏单图(铺满, 上下裁切)\"),\n"
+         "    (\"grid\", \"全屏铺满(默认, cover)\"),\n"
+         "    (\"single1\", \"卡片单图(模糊填充)\"),\n"
          "]"),
         ("def compose(mode, size=None):", FIT_RENDER.strip("\n") + "\n\n\ndef compose(mode, size=None):"),
         ("    \"\"\"按模式名合成壁纸: mode ∈ {grid, single1..}。\n"
@@ -157,9 +157,9 @@ def gen_wallpaper():
         ("DeepSeek 蓝色大肥鱼 · 皮肤套件 —— 壁纸命令行",
          "DeepSeek 蓝色大肥鱼 · 皮肤套件%s —— 壁纸命令行" % NUM),
         ("  python tools/wallpaper.py grid --set            # 生成并设置 2x2 拼贴壁纸",
-         "  python tools/wallpaper.py grid --set            # 生成并设置完整卡片单图(默认, 不裁切)"),
+         "  python tools/wallpaper.py grid --set            # 生成并设置全屏铺满单图(默认, cover)"),
         ("  python tools/wallpaper.py 1 --set               # 生成并设置单图 1(摸摸头)",
-         "  python tools/wallpaper.py 1 --set               # 生成并设置全屏单图(cover 铺满, 上下裁切)"),
+         "  python tools/wallpaper.py 1 --set               # 生成并设置卡片单图(模糊填充 + 圆角)"),
         ("  python tools/wallpaper.py all --size 1920x1080  # 生成全部 5 种到 ~/.deepskin/wallpapers",
          "  python tools/wallpaper.py all --size 1920x1080  # 生成全部模式到 ~/.deepskin%s/wallpapers" % NUM),
         ('ap = argparse.ArgumentParser(description="DeepSeek 大肥鱼壁纸工具")',
@@ -283,13 +283,13 @@ def gen_pet():
         ("DeepSeek 蓝色大肥鱼 · 皮肤套件 —— 桌面桌宠",
          "DeepSeek 蓝色大肥鱼 · 皮肤套件%s —— 桌面桌宠" % NUM),
         ('SLEEP_STEM = "01-water"  # 漂在水中的图: 慢慢晃',
-         'SLEEP_STEM = "%s"  # 四格拼图取景: 慢慢晃' % ASSET_STEM),
+         'SLEEP_STEM = "%s"  # 人物区域取景: 慢慢晃' % ASSET_STEM),
         ('MODES = [\n    ("01-water", "漂在水中"),\n]',
          'MODES = [\n    ("%s", "%s"),\n]' % (ASSET_STEM, PET_NAME)),
         ("# 非白底素材(如蓝色水景)不做泛洪去底, 改用方形取景裁剪:\n"
          "# {stem: (中心x比例, 中心y比例, 半边长占最短边比例)}\n"
          'PET_CROPS = {\n    "01-water": (0.72, 0.45, 0.47),\n}',
-         "# 四格拼图整张不好抠: 取景裁剪出左上「胆孝」那一格做桌宠贴图\n"
+         "# 特写插画没有白底可抠: 取景裁剪出人物区域\n"
          "# {stem: (中心x比例, 中心y比例, 半边长占最短边比例)}\n"
          'PET_CROPS = {\n    "%s": (%.2f, %.2f, %.2f),\n}\n'
          "# 去底容差(颜色距离) 与 判定为底色所需的最低亮度\n"
@@ -309,7 +309,7 @@ def gen_install():
         ('print("  DeepSeek 蓝色大肥鱼 · 皮肤套件 安装器")',
          'print("  DeepSeek 蓝色大肥鱼 · 皮肤套件%s 安装器")' % NUM),
         ("  • 生成全部壁纸:         python tools/wallpaper.py all",
-         "  • 全屏铺满单图:         python tools/wallpaper.py 1 --set"),
+         "  • 卡片单图:             python tools/wallpaper.py 1 --set"),
     ], "tools/install.py")
     write(os.path.join(DST, "tools", "install.py"), t)
 
@@ -334,8 +334,8 @@ def gen_vscode():
          "    { mode: 'single1', t: '卡片单图', img: 'thumb-1.png' }\n"
          "  ];",
          "  const cards = [\n"
-         "    { mode: 'grid', t: '完整卡片(不裁切)', img: 'thumb-grid.png' },\n"
-         "    { mode: 'single1', t: '全屏铺满(cover)', img: 'thumb-1.png' }\n"
+         "    { mode: 'grid', t: '全屏铺满(cover)', img: 'thumb-grid.png' },\n"
+         "    { mode: 'single1', t: '卡片单图', img: 'thumb-1.png' }\n"
          "  ];"),
     ], "vscode/extension.js")
     write(os.path.join(DST, "vscode", "extension.js"), t)
@@ -347,8 +347,8 @@ def gen_vscode():
     p = p.replace("大肥鱼12", "大肥鱼%s" % NUM)
     p = p.replace("皮肤套件12", "皮肤套件%s" % NUM)
     p = p.replace("DeepSkin-Suit12", "DeepSkin-Suit%s" % NUM)
-    p = p.replace(": 全屏单图", ": 完整卡片(不裁切)")
-    p = p.replace(": 卡片单图", ": 全屏铺满(cover)")
+    p = p.replace(": 全屏单图", ": 全屏铺满(cover)")
+    p = p.replace(": 卡片单图", ": 卡片单图(模糊填充)")
     write(os.path.join(DST, "vscode", "package.json"), p)
 
 
@@ -357,8 +357,8 @@ AGENTS_MD = """# AGENTS.md — Deepseek-Skin-Suit{NUM} · AI 自动安装指引(
 
 当用户把本仓库地址交给你并要求「安装大肥鱼皮肤{NUM} / Deepseek 皮肤{NUM} / 壁纸插件 / 蓝色大肥鱼桌宠」时,
 按下面步骤替用户执行, 不需要用户自己动手。本仓库是 **DeepSeek 蓝色大肥鱼皮肤套件{NUM}**
-(四格表情拼图: 鲸鱼神了我大胆孝 / 鲸鱼拉了我偷偷孝 / 鲸鱼超越其他模型我跳脸孝 / 鲸鱼被其他模型超我嘴硬孝),
-提供**单张样式**壁纸两种形态——完整卡片单图(整张不裁切, 默认)与全屏铺满单图(cover),
+(特写插画: 鲸鱼娘戴苗银头冠, 银杏叶环绕, 微笑伸手),
+提供**单张样式**壁纸两种形态——全屏铺满单图(cover, 默认)与卡片单图(模糊填充),
 外加可视化切换器、桌面桌宠、VSCode 系扩展与 JetBrains 背景图素材。
 核心脚本在 `tools/`, 素材在 `assets/`。
 
@@ -387,21 +387,21 @@ Windows 建议固定克隆到 `%USERPROFILE%\\DeepSkin-Suit{NUM}`(VSCode 扩展�
 ```bash
 python tools/install.py
 ```
-脚本会自动: 装 Pillow(若缺失) → 按屏幕分辨率合成**完整卡片单图壁纸**(整张素材居中加圆角阴影,
-不裁切任何一格文案) → 设为系统壁纸 → 打印后续玩法。
-**关于裁切**: 素材是 1:1 方形四格拼图, 16:9 屏上用 cover 铺满会裁掉上下各约 22%, 四格文案会被切;
-所以默认走"完整卡片"。想改成铺满整屏: `python tools/wallpaper.py 1 --set`。
+脚本会自动: 装 Pillow(若缺失) → 按屏幕分辨率合成**全屏铺满单图壁纸**(cover 铺满整屏)
+→ 设为系统壁纸 → 打印后续玩法。
+**关于裁切**: 素材是 1104x637(约 16:9), 与常见屏幕同形, cover 铺满时几乎不裁切。
+想改成整张居中不裁切的卡片样式: `python tools/wallpaper.py 1 --set`。
 多显示器: 用 `python tools/wallpaper.py grid --size 2560x1440 --set`, 并提示用户在系统设置里设成「跨屏/平铺」。
 
 ## B. 进阶玩法(用户想要时再执行)
 
 ```bash
-python tools/wallpaper.py 1 --set        # 全屏铺满单图(cover, 上下裁掉约 22%)
-python tools/wallpaper.py grid --set     # 回到完整卡片单图(不裁切)
+python tools/wallpaper.py 1 --set        # 卡片单图(整张居中 + 模糊填充)
+python tools/wallpaper.py grid --set     # 回到全屏铺满(cover)
 python tools/wallpaper.py random --set   # 随机一张(两种模式随机)
 python tools/wallpaper.py cycle 30       # 每 30 分钟自动随机(挂后台)
 python tools/switcher.py                 # 可视化切换器(GUI, 左侧预览右侧应用)
-python tools/pet.py                      # 桌面桌宠(取左上"胆孝"那格, 右键换/退出)
+python tools/pet.py                      # 桌面桌宠(取人物区域, 右键换/退出)
 ```
 GUI 命令需要本地图形会话; 若用户是远程/无桌面环境, 告知其改在有桌面的机器上运行。
 **用户要求「支持切换壁纸」时, 优先引导 `switcher.py`(点选即换), 或 `wallpaper.py random/cycle`。**
@@ -442,28 +442,28 @@ python tools/wallpaper.py all --out "$HOME/DeepSkin{NUM}"
 
 README_MD = """# 🐳 DeepSeek 蓝色大肥鱼 · 皮肤套件{NUM} (Deepseek-Skin-Suit{NUM})
 
-DeepSeek 蓝色大肥鱼(鲸鱼娘)主题皮肤第十七弹: **单张样式**——一张四格表情拼图,
-提供 **完整卡片单图**(整张不裁切, 默认)与 **全屏铺满单图** 两种壁纸形态,
+DeepSeek 蓝色大肥鱼(鲸鱼娘)主题皮肤第二十一弹: **单张样式**——一张银杏银饰特写,
+提供 **全屏铺满单图**(cover, 默认)与 **卡片单图**(模糊填充 + 圆角卡片)两种壁纸形态,
 外加可视化切换器、桌面桌宠与多 IDE 皮肤。
-四格: 鲸鱼神了我大胆孝 · 鲸鱼拉了我偷偷孝 · 鲸鱼超越其他模型我跳脸孝 · 鲸鱼被其他模型超我嘴硬孝。
+画面: 鲸鱼娘戴苗银头冠, 银杏叶环绕身侧, 微笑着伸手, 暖金与藏蓝相衬。
 素材内置、离线可用; 跨平台 Windows / macOS / Linux。
 
-![完整卡片单图预览](docs/single-preview.png)
+![全屏单图预览](docs/single-preview.png)
 
 ## ✨ 功能
 
 | 功能 | 说明 |
 |---|---|
-| 完整卡片单图 | 整张素材居中 + 圆角阴影 + 渐变底, 不裁切任何一格文案(默认) |
-| 全屏铺满单图 | 素材按 cover 铺满整屏; 方形素材在 16:9 屏上下各裁约 22% |
+| 全屏铺满单图 | 素材按 cover 铺满整屏(默认; 1104x637 与屏幕同形, 几乎不裁切) |
+| 卡片单图 | 整张素材居中 + 圆角卡片 + 模糊填充背景 |
 | 可视化切换器 | `tools/switcher.py`: 左侧实时预览, 右侧点「应用到桌面」, 可开自动随机 |
 | 命令行换壁纸 | `tools/wallpaper.py`: grid / 1 / random / all / cycle |
-| 桌面桌宠 | `tools/pet.py`: 取左上「胆孝」那一格, 透明置顶可拖动, 右键换/退出 |
+| 桌面桌宠 | `tools/pet.py`: 取人物区域, 透明置顶可拖动, 右键换/退出 |
 | VSCode 系扩展 | 活动栏 🐳 图标 → 皮肤画廊, 卡片点选即换壁纸 |
-| JetBrains 素材 | 生成完整卡片图与铺满图, 供 PyCharm/WebStorm 背景图导入 |
+| JetBrains 素材 | 生成全屏铺满图与卡片图, 供 PyCharm/WebStorm 背景图导入 |
 
-> 素材是 1:1 方形四格拼图。默认的「完整卡片单图」保证四格文案完整可见;
-> 「全屏铺满单图」更沉浸, 但 16:9 屏会裁掉上下各约 22%。
+> 素材是 1104x637(约 16:9), 与常见屏幕同形, 默认的「全屏铺满」几乎不裁切;
+> 想让整张原封不动显示, 用「卡片单图」。
 
 ## 🚀 一键安装
 
@@ -473,15 +473,15 @@ DeepSeek 蓝色大肥鱼(鲸鱼娘)主题皮肤第十七弹: **单张样式**—
 ```bash
 git clone https://github.com/WPH666-py/Deepseek-Skin-Suit{NUM}.git "$HOME/DeepSkin-Suit{NUM}"
 cd "$HOME/DeepSkin-Suit{NUM}"
-python tools/install.py          # 装 Pillow → 生成全屏单图 → 设为系统壁纸
+python tools/install.py          # 装 Pillow → 生成全屏铺满 → 设为系统壁纸
 ```
 
 ## 🎛 切换壁纸
 
 ```bash
 python tools/switcher.py                 # 图形切换器(推荐)
-python tools/wallpaper.py 1 --set        # 全屏铺满单图(cover)
-python tools/wallpaper.py grid --set     # 回到完整卡片单图(不裁切)
+python tools/wallpaper.py 1 --set        # 卡片单图(模糊填充)
+python tools/wallpaper.py grid --set     # 回到全屏铺满(cover)
 python tools/wallpaper.py random --set   # 随机一张
 python tools/wallpaper.py cycle 30       # 每 30 分钟自动随机
 python tools/wallpaper.py all --out ~/DeepSkin{NUM}   # 导出全部(给 PyCharm 等用)
@@ -511,7 +511,7 @@ python tools/pet.py     # 透明置顶小鲸鱼; 左键拖动, 右键菜单, Esc
 ## 📁 目录结构
 
 ```
-assets/           1 张四格表情拼图(01-quad.jpg, 960x960)
+assets/           1 张特写插画(01-ginkgo.jpg, 1104x637)
 tools/            install.py 一键安装 · wallpaper.py 命令行 · switcher.py 切换器 · pet.py 桌宠
 vscode/           预打包 VSCode/Trae/CodeX 扩展(deepskin-suit{NUM}-0.1.0.vsix)
 ide/jetbrains/    PyCharm 等背景图导入说明
@@ -544,8 +544,8 @@ python tools/wallpaper.py all --out "$HOME/DeepSkin{NUM}"
 会得到 2 张图:
 
 ```
-grid-<宽>x<高>.jpg       完整卡片单图(整张不裁切, 推荐编辑器用)
-single1-<宽>x<高>.jpg    全屏铺满单图(cover, 上下裁约 22%)
+grid-<宽>x<高>.jpg       全屏铺满单图(cover, 默认)
+single1-<宽>x<高>.jpg    卡片单图(整张居中 + 模糊填充)
 ```
 
 想指定尺寸加 `--size 2560x1440`。
@@ -560,8 +560,8 @@ single1-<宽>x<高>.jpg    全屏铺满单图(cover, 上下裁约 22%)
 
 ## 3. 推荐搭配
 
-- 编辑器: `grid-*.jpg`(整张完整, 不裁字), 不透明度 10% 左右。
-- 欢迎页: `single1-*.jpg`(铺满), 不透明度可到 40%。
+- 编辑器: `single1-*.jpg`(整张居中, 背景不抢注意力), 不透明度 10% 左右。
+- 欢迎页: `grid-*.jpg`(铺满), 不透明度可到 40%。
 """
 
 INSTALL_BAT = """@echo off
@@ -615,7 +615,7 @@ def gen_static():
 def main():
     if os.path.exists(os.path.join(DST, ".git")):
         raise SystemExit("[gen] 目标已存在 git 仓库, 停止: %s" % DST)
-    total = 27
+    total = 30
     gen_skin_core()
     gen_wallpaper()
     gen_switcher()
