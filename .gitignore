@@ -1,3 +1,10 @@
 node_modules/
 *.tgz
 *.vsix
+
+# 皮肤脚手架: 素材与各皮肤仓库 assets/ 重复, 不进仓
+_suit*-src/*.jpg
+_suit*-src/*.jpeg
+_suit*-src/*.png
+_suit*-src/tpl/
+_suit*-src/__pycache__/
