@@ -16,6 +16,7 @@
 | `_suit17-src/` | Deepseek-Skin-Suit17 | 单张（完整卡片/铺满） | 以 **Suit12** 单张模板为起点，全量显式改写 |
 | `_suit18-src/` | Deepseek-Skin-Suit18 | 2×2 拼贴 | 以 Suit16 的 2×2 模板为起点，全量显式改写 |
 | `_suit19-src/` | Deepseek-Skin-Suit19 | 单张（完整卡片/铺满） | 由 17 派生；`make_gen19.py` |
+| `_suit20-src/` | Deepseek-Skin-Suit20 | 单张（铺满/卡片） | 由 17 派生；`make_gen20.py`。素材 16:9，故默认恢复 cover |
 
 ## 怎么重跑
 
@@ -46,13 +47,18 @@ Windows 上把 `mk`/`cp` 换成 `New-Item -ItemType Directory` / `Copy-Item` 亦
 4. 在 `Desktop-IDE-AI-Skin/catalog.json` 追加一行，`python scripts/sync_catalog.py` 同步包内目录，
    再 `python -m build && python -m twine upload dist/*` 发版。
 
-## 两个坑（都踩过）
+## 三个坑（都踩过）
 
 - **别用"整串替换上一套文案"的方式生成新套件。** 链条越长越容易静默漏改，曾经把上一套的
   卡片标题、`package.json` 命令名、`AGENTS.md` 描述留在新仓库里，而且不报错。
   现在的写法是 `patch()` 逐条断言"必须命中且唯一"，同时把卡片标题之类改成由 `IMAGE_NAMES` **现算**。
 - **`patch()` 的锚点必须与模板逐字一致**，包括尾逗号、`\n` 转义、以及只存在于"生成出的代码"里
   （而非生成器源码里）的注释。`_suit19-src/make_gen19.py` 的注释里记了具体案例。
+- **派生新生成器时，先确认 `tpl/` 是哪一代的模板。** 这一坑耗了 Suit20 大半时间：
+  `gen_suit17_base.py` 里的锚点是写给 **Suit12** 模板的，我一开始却把 **Suit17 的成品仓库**
+  当模板塞进 `tpl/`，于是大量锚点"已定型"、全部匹配失败（`patch` 报"未找到片段"）。
+  规则：**从哪一代复制生成器，就用它当初那一代的模板**（见上表"模板起点"一列）。
+  排查手法：拿 `patch` 报出的缺失片段去 `tpl/` 里 `grep`，命中不了就是模板代次错了。
 
 ## 单张样式为什么默认"完整卡片"而不是 cover
 
